@@ -2,11 +2,7 @@
 # zzz.R — Package load / attach hooks
 # =============================================================================
 
-#' @importFrom stats as.formula binomial cor model.matrix pnorm prcomp
-#'   quantile rbinom rnorm runif sd terms var
-
-.onLoad <- function(libname, pkgname) {
-  # Soft-check for INLA at load time (no error, just a message)
+.onAttach <- function(libname, pkgname) {
   if (!requireNamespace("INLA", quietly = TRUE)) {
     packageStartupMessage(
       "INLAocc requires the INLA package. Install with:\n",
@@ -15,8 +11,7 @@
   }
 }
 
-#' Check that INLA is available (internal)
-#' @keywords internal
+#' @noRd
 check_inla <- function() {
   if (!requireNamespace("INLA", quietly = TRUE)) {
     stop(
@@ -27,6 +22,5 @@ check_inla <- function() {
   }
 }
 
-#' Null-coalescing operator
-#' @keywords internal
+#' @noRd
 `%||%` <- function(a, b) if (!is.null(a)) a else b

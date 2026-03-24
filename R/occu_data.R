@@ -15,7 +15,7 @@
 #' @param coords optional N x 2 matrix of site coordinates (for spatial models)
 #' @param species optional character or integer species identifier (for multi-species)
 #'
-#' @return An object of class "occu_data" with validated components
+#' @return An object of class \code{"occu_data"} with validated components
 #'
 #' @examples
 #' y <- matrix(rbinom(200, 1, 0.4), nrow = 50, ncol = 4)
@@ -25,6 +25,7 @@
 #'   date   = matrix(rnorm(200), 50, 4)
 #' )
 #' dat <- occu_format(y, occ_covs, det_covs)
+#' @export
 occu_format <- function(y, occ.covs = NULL, det.covs = NULL,
                         coords = NULL, species = NULL) {
 
@@ -126,6 +127,10 @@ occu_format <- function(y, occ.covs = NULL, det.covs = NULL,
 
 
 #' Print method for occu_data
+#' @param x an \code{occu_data} object
+#' @param ... additional arguments (ignored)
+#' @return The \code{occu_data} object \code{x}, returned invisibly.
+#' @export
 print.occu_data <- function(x, ...) {
   cat("Occupancy data (occu_data)\n")
   cat(sprintf("  Sites:    %d\n", x$N))
@@ -155,7 +160,8 @@ print.occu_data <- function(x, ...) {
 #' @param det.covs detection covariates (shared or species-specific)
 #' @param coords optional coordinates
 #'
-#' @return object of class "occu_data_ms"
+#' @return object of class \code{"occu_data_ms"}
+#' @export
 occu_format_ms <- function(y_list, occ.covs = NULL, det.covs = NULL,
                            coords = NULL) {
   # Accept 3D array (species x sites x visits) — spOccupancy format
@@ -227,6 +233,7 @@ occu_format_ms <- function(y_list, occ.covs = NULL, det.covs = NULL,
 #' @param seed random seed
 #'
 #' @return list with occu_data object and true parameter values
+#' @export
 simulate_occu <- function(N = 100, J = 4,
                           n_occ_covs = 2, n_det_covs = 1,
                           beta_occ = NULL, beta_det = NULL,
@@ -342,6 +349,7 @@ simulate_occu <- function(N = 100, J = 4,
 #' @param seed random seed
 #'
 #' @return list with occu_data_ms object and true parameters
+#' @export
 simMsOcc <- function(N = 100, J = 4, n_species = 10,
                      n_occ_covs = 1, n_det_covs = 1,
                      beta_comm_mean = NULL, beta_comm_sd = NULL,
@@ -451,6 +459,7 @@ simMsOcc <- function(N = 100, J = 4, n_species = 10,
 #' @param seed random seed
 #'
 #' @return list with data suitable for temporal_occu_inla and true values
+#' @export
 simTOcc <- function(N = 100, J = 4, n_seasons = 5,
                     beta_occ = c(0.5, 0.3), beta_det = c(0, -0.3),
                     ar1 = TRUE, rho = 0.7, sigma_t = 0.5,
@@ -561,6 +570,7 @@ simTOcc <- function(N = 100, J = 4, n_seasons = 5,
 #' @param seed random seed
 #'
 #' @return list with data for intOccu_inla and true values
+#' @export
 simIntOcc <- function(N_total = 150, n_data = 2, J = c(4, 3),
                       n_shared = 20,
                       beta_occ = c(0.5, 0.3),
@@ -641,6 +651,231 @@ simIntOcc <- function(N_total = 150, n_data = 2, J = c(4, 3),
       z        = z,
       psi      = psi,
       beta_occ = beta_occ,
+      beta_det = beta_det
+    )
+  )
+}
+
+
+#' Simulate temporal multi-species occupancy data (cf. simTMsOcc)
+#'
+#' @param N number of sites
+#' @param J number of visits per season
+#' @param n_species number of species
+#' @param n_seasons number of primary periods
+#' @param n_occ_covs number of occupancy covariates
+#' @param n_det_covs number of detection covariates
+#' @param beta_comm_mean community mean for occupancy coefficients
+#' @param beta_comm_sd community SD for occupancy coefficients
+#' @param alpha_comm_mean community mean for detection coefficients
+#' @param alpha_comm_sd community SD for detection coefficients
+#' @param ar1 logical: use AR(1) temporal correlation
+#' @param rho AR(1) correlation parameter
+#' @param sigma_t temporal innovation SD
+#' @param seed random seed
+#'
+#' @return list with 4D data and true parameters
+#' @export
+simTMsOcc <- function(N = 100, J = 4, n_species = 10, n_seasons = 5,
+                       n_occ_covs = 1, n_det_covs = 1,
+                       beta_comm_mean = NULL, beta_comm_sd = NULL,
+                       alpha_comm_mean = NULL, alpha_comm_sd = NULL,
+                       ar1 = TRUE, rho = 0.7, sigma_t = 0.5,
+                       seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  n_beta <- 1 + n_occ_covs
+  n_alpha <- 1 + n_det_covs
+
+  if (is.null(beta_comm_mean))  beta_comm_mean  <- c(0.3, rep(0, n_occ_covs))
+  if (is.null(beta_comm_sd))    beta_comm_sd    <- c(1.0, rep(0.5, n_occ_covs))
+  if (is.null(alpha_comm_mean)) alpha_comm_mean <- c(0.0, rep(0, n_det_covs))
+  if (is.null(alpha_comm_sd))   alpha_comm_sd   <- c(0.8, rep(0.3, n_det_covs))
+
+  X_occ <- matrix(rnorm(N * n_occ_covs), N, n_occ_covs)
+  colnames(X_occ) <- paste0("occ_x", seq_len(n_occ_covs))
+  coords <- cbind(x = runif(N), y = runif(N))
+
+  betas  <- matrix(rnorm(n_species * n_beta, beta_comm_mean, beta_comm_sd),
+                    n_species, n_beta, byrow = TRUE)
+  alphas <- matrix(rnorm(n_species * n_alpha, alpha_comm_mean, alpha_comm_sd),
+                    n_species, n_alpha, byrow = TRUE)
+  sp_names <- paste0("sp", seq_len(n_species))
+
+  # Temporal RE per species
+  temporal_re <- array(0, dim = c(n_species, N, n_seasons))
+  if (ar1) {
+    for (s in seq_len(n_species)) {
+      for (i in seq_len(N)) {
+        temporal_re[s, i, 1] <- rnorm(1, 0, sigma_t / sqrt(1 - rho^2))
+        for (t in 2:n_seasons) {
+          temporal_re[s, i, t] <- rho * temporal_re[s, i, t - 1] + rnorm(1, 0, sigma_t)
+        }
+      }
+    }
+  }
+
+  # Generate data: 4D array (species x sites x seasons x visits)
+  y_array <- array(NA, dim = c(n_species, N, n_seasons, J))
+  z_array <- array(NA, dim = c(n_species, N, n_seasons))
+  psi_array <- array(NA, dim = c(n_species, N, n_seasons))
+
+  det_covs <- lapply(seq_len(n_det_covs), function(k) {
+    array(rnorm(N * n_seasons * J), dim = c(N, n_seasons, J))
+  })
+  names(det_covs) <- paste0("det_x", seq_len(n_det_covs))
+
+  for (s in seq_len(n_species)) {
+    for (t in seq_len(n_seasons)) {
+      eta_occ <- betas[s, 1] + X_occ %*% betas[s, -1] + temporal_re[s, , t]
+      psi_st <- as.vector(1 / (1 + exp(-eta_occ)))
+      z_st <- rbinom(N, 1, psi_st)
+      psi_array[s, , t] <- psi_st
+      z_array[s, , t] <- z_st
+
+      for (i in seq_len(N)) {
+        for (j in seq_len(J)) {
+          eta_det <- alphas[s, 1]
+          for (k in seq_len(n_det_covs)) {
+            eta_det <- eta_det + alphas[s, k + 1] * det_covs[[k]][i, t, j]
+          }
+          p_ij <- 1 / (1 + exp(-eta_det))
+          y_array[s, i, t, j] <- rbinom(1, 1, z_st[i] * p_ij)
+        }
+      }
+    }
+  }
+  dimnames(y_array)[[1]] <- sp_names
+
+  list(
+    data = list(
+      y        = y_array,
+      occ.covs = as.data.frame(X_occ),
+      det.covs = det_covs,
+      coords   = coords
+    ),
+    truth = list(
+      z     = z_array,
+      psi   = psi_array,
+      betas = betas, alphas = alphas,
+      beta_comm_mean = beta_comm_mean, beta_comm_sd = beta_comm_sd,
+      alpha_comm_mean = alpha_comm_mean, alpha_comm_sd = alpha_comm_sd,
+      temporal_re = temporal_re, rho = rho, sigma_t = sigma_t
+    )
+  )
+}
+
+
+#' Simulate integrated multi-species occupancy data (cf. simIntMsOcc)
+#'
+#' @param N_total total unique sites
+#' @param n_species number of species
+#' @param n_data number of data sources
+#' @param J vector of visits per source
+#' @param n_shared number of sites shared across sources
+#' @param beta_comm_mean community mean for occupancy coefficients
+#' @param beta_comm_sd community SD for occupancy coefficients
+#' @param beta_det list of detection coefficient vectors (one per source)
+#' @param seed random seed
+#'
+#' @return list with data for integrated multi-species models and true values
+#' @export
+simIntMsOcc <- function(N_total = 150, n_species = 10, n_data = 2,
+                         J = c(4, 3), n_shared = 20,
+                         beta_comm_mean = NULL, beta_comm_sd = NULL,
+                         beta_det = NULL, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+
+  n_occ_covs <- 1
+  n_beta <- 1 + n_occ_covs
+
+  if (is.null(beta_comm_mean)) beta_comm_mean <- c(0.3, 0.2)
+  if (is.null(beta_comm_sd))   beta_comm_sd   <- c(1.0, 0.5)
+  if (is.null(beta_det)) {
+    beta_det <- lapply(seq_len(n_data), function(d) c(0.2 * d, -0.3))
+  }
+
+  X_occ <- matrix(rnorm(N_total * n_occ_covs), N_total, n_occ_covs)
+  colnames(X_occ) <- paste0("occ_x", seq_len(n_occ_covs))
+  coords <- cbind(x = runif(N_total), y = runif(N_total))
+
+  betas <- matrix(rnorm(n_species * n_beta, beta_comm_mean, beta_comm_sd),
+                   n_species, n_beta, byrow = TRUE)
+  sp_names <- paste0("sp", seq_len(n_species))
+
+  # Site assignment
+  all_sites <- seq_len(N_total)
+  shared <- sample(all_sites, n_shared)
+  remaining <- setdiff(all_sites, shared)
+  per_source <- (N_total - n_shared) %/% n_data
+
+  sites_list <- list()
+  start <- 1
+  for (d in seq_len(n_data)) {
+    if (d < n_data) {
+      unique_d <- remaining[start:(start + per_source - 1)]
+      start <- start + per_source
+    } else {
+      unique_d <- remaining[start:length(remaining)]
+    }
+    sites_list[[d]] <- sort(c(shared, unique_d))
+  }
+
+  # True occupancy per species
+  z_mat <- matrix(NA, n_species, N_total)
+  psi_mat <- matrix(NA, n_species, N_total)
+  for (s in seq_len(n_species)) {
+    eta <- betas[s, 1] + X_occ %*% betas[s, -1]
+    psi_mat[s, ] <- as.vector(1 / (1 + exp(-eta)))
+    z_mat[s, ] <- rbinom(N_total, 1, psi_mat[s, ])
+  }
+
+  # Generate per-source detection data as 3D arrays (species x sites_d x J_d)
+  y_list <- list()
+  det_covs_list <- list()
+  for (d in seq_len(n_data)) {
+    sites_d <- sites_list[[d]]
+    N_d <- length(sites_d)
+    J_d <- J[d]
+    n_det_covs_d <- length(beta_det[[d]]) - 1
+
+    det_covs_d <- list()
+    if (n_det_covs_d > 0) {
+      for (k in seq_len(n_det_covs_d)) {
+        det_covs_d[[paste0("det_x", k)]] <- matrix(rnorm(N_d * J_d), N_d, J_d)
+      }
+    }
+
+    y_d <- array(NA, dim = c(n_species, N_d, J_d))
+    for (s in seq_len(n_species)) {
+      for (i in seq_len(N_d)) {
+        si <- sites_d[i]
+        for (j in seq_len(J_d)) {
+          eta_det <- beta_det[[d]][1]
+          for (k in seq_len(n_det_covs_d)) {
+            eta_det <- eta_det + beta_det[[d]][k + 1] * det_covs_d[[k]][i, j]
+          }
+          p_ij <- 1 / (1 + exp(-eta_det))
+          y_d[s, i, j] <- rbinom(1, 1, z_mat[s, si] * p_ij)
+        }
+      }
+    }
+    dimnames(y_d)[[1]] <- sp_names
+    y_list[[d]] <- y_d
+    det_covs_list[[d]] <- det_covs_d
+  }
+
+  list(
+    data = list(
+      y        = y_list,
+      occ.covs = as.data.frame(X_occ),
+      det.covs = det_covs_list,
+      sites    = sites_list,
+      coords   = coords
+    ),
+    truth = list(
+      z = z_mat, psi = psi_mat, betas = betas,
+      beta_comm_mean = beta_comm_mean, beta_comm_sd = beta_comm_sd,
       beta_det = beta_det
     )
   )

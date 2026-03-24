@@ -21,6 +21,7 @@
 #'     \item{psi}{length-N vector of estimated occupancy probabilities}
 #'     \item{z}{length-N vector of posterior P(z=1)}
 #'   }
+#' @export
 fitted.occu_inla <- function(object, ...) {
   y_rep <- object$z_hat * object$p_hat
   # For unvisited cells, set to NA
@@ -52,6 +53,7 @@ fitted.occu_inla <- function(object, ...) {
 #'     \item{occ.resids}{length-N occupancy residuals}
 #'     \item{det.resids}{N x J detection residuals}
 #'   }
+#' @export
 residuals.occu_inla <- function(object, type = c("deviance", "pearson", "response"),
                                 ...) {
   type <- match.arg(type)
@@ -108,6 +110,213 @@ residuals.occu_inla <- function(object, type = c("deviance", "pearson", "respons
 
 
 # ---------------------------------------------------------------------------
+#  fitted / residuals for integrated models
+# ---------------------------------------------------------------------------
+
+#' Extract fitted values from an integrated occupancy model
+#'
+#' @param object fitted occu_inla_int object
+#' @param ... ignored
+#' @return list with per-source y.rep, p, and shared psi, z
+#' @export
+fitted.occu_inla_int <- function(object, ...) {
+  n_data <- object$n_data
+  y_reps <- vector("list", n_data)
+  for (d in seq_len(n_data)) {
+    y_d <- object$data$y[[d]]
+    sites_d <- object$data$sites[[d]]
+    z_d <- object$z_hat[sites_d]
+    p_d <- object$p_hats[[d]]
+    y_rep <- z_d * p_d
+    y_rep[is.na(y_d)] <- NA
+    y_reps[[d]] <- y_rep
+  }
+
+  list(
+    y.rep = y_reps,
+    p     = object$p_hats,
+    psi   = object$psi_hat,
+    z     = object$z_hat
+  )
+}
+
+
+#' Compute residuals for an integrated occupancy model
+#'
+#' @param object fitted occu_inla_int object
+#' @param type "deviance" (default), "pearson", or "response"
+#' @param ... ignored
+#' @return list with per-source detection residuals and shared occupancy residuals
+#' @export
+residuals.occu_inla_int <- function(object,
+                                    type = c("deviance", "pearson", "response"),
+                                    ...) {
+  type <- match.arg(type)
+  N_total <- length(object$psi_hat)
+  psi <- clamp(object$psi_hat)
+  z_hat <- object$z_hat
+  detected_any <- z_hat == 1
+
+  # Occupancy residuals (shared)
+  if (type == "response") {
+    occ_resid <- as.integer(detected_any) - psi
+  } else if (type == "pearson") {
+    occ_var <- psi * (1 - psi)
+    occ_resid <- (as.integer(detected_any) - psi) / sqrt(clamp(occ_var, lo = 1e-6))
+  } else {
+    occ_resid <- numeric(N_total)
+    for (i in seq_len(N_total)) {
+      d_i <- as.integer(detected_any[i])
+      mu <- clamp(psi[i])
+      occ_resid[i] <- if (d_i == 1) sqrt(-2 * log(mu)) else -sqrt(-2 * log(1 - mu))
+    }
+  }
+
+  # Per-source detection residuals
+  det_resids <- vector("list", object$n_data)
+  for (d in seq_len(object$n_data)) {
+    y_d <- object$data$y[[d]]
+    sites_d <- object$data$sites[[d]]
+    z_d <- z_hat[sites_d]
+    p_d <- clamp(object$p_hats[[d]])
+    y_exp <- z_d * p_d
+
+    if (type == "response") {
+      det_resids[[d]] <- y_d - y_exp
+    } else if (type == "pearson") {
+      det_var <- y_exp * (1 - p_d)
+      det_resids[[d]] <- (y_d - y_exp) / sqrt(clamp(det_var, lo = 1e-6))
+    } else {
+      N_d <- nrow(y_d)
+      J_d <- ncol(y_d)
+      dr <- matrix(NA, N_d, J_d)
+      for (i in seq_len(N_d)) {
+        for (j in seq_len(J_d)) {
+          if (is.na(y_d[i, j])) next
+          mu <- clamp(y_exp[i, j])
+          dr[i, j] <- if (y_d[i, j] == 1) sqrt(-2 * log(mu)) else -sqrt(-2 * log(1 - mu))
+        }
+      }
+      det_resids[[d]] <- dr
+    }
+  }
+
+  list(occ.resids = occ_resid, det.resids = det_resids)
+}
+
+
+# ---------------------------------------------------------------------------
+#  fitted / residuals for multi-species models
+# ---------------------------------------------------------------------------
+
+#' Extract fitted values from a multi-species occupancy model
+#'
+#' @param object fitted occu_inla_ms object
+#' @param ... ignored
+#' @return named list of per-species fitted value lists
+#' @export
+fitted.occu_inla_ms <- function(object, ...) {
+  results <- list()
+  for (sp in object$species_names) {
+    fit <- object$species_fits[[sp]]
+    if (!is.null(fit)) {
+      results[[sp]] <- fitted.occu_inla(fit, ...)
+    }
+  }
+  results
+}
+
+
+#' Compute residuals for a multi-species occupancy model
+#'
+#' @param object fitted occu_inla_ms object
+#' @param type "deviance" (default), "pearson", or "response"
+#' @param ... ignored
+#' @return named list of per-species residual lists
+#' @export
+residuals.occu_inla_ms <- function(object,
+                                   type = c("deviance", "pearson", "response"),
+                                   ...) {
+  type <- match.arg(type)
+  results <- list()
+  for (sp in object$species_names) {
+    fit <- object$species_fits[[sp]]
+    if (!is.null(fit)) {
+      results[[sp]] <- residuals.occu_inla(fit, type = type, ...)
+    }
+  }
+  results
+}
+
+
+# ---------------------------------------------------------------------------
+#  fitted / residuals for temporal models
+# ---------------------------------------------------------------------------
+
+#' Extract fitted values from a temporal occupancy model
+#'
+#' @param object fitted occu_inla_temporal object
+#' @param ... ignored
+#' @return list of per-period fitted value lists
+#' @export
+fitted.occu_inla_temporal <- function(object, ...) {
+  results <- vector("list", object$n_periods)
+  for (t in seq_len(object$n_periods)) {
+    fit <- object$period_fits[[t]]
+    if (!is.null(fit)) {
+      results[[t]] <- fitted.occu_inla(fit, ...)
+    }
+  }
+  results
+}
+
+
+#' Compute residuals for a temporal occupancy model
+#'
+#' @param object fitted occu_inla_temporal object
+#' @param type "deviance" (default), "pearson", or "response"
+#' @param ... ignored
+#' @return list of per-period residual lists
+#' @export
+residuals.occu_inla_temporal <- function(object,
+                                         type = c("deviance", "pearson", "response"),
+                                         ...) {
+  type <- match.arg(type)
+  results <- vector("list", object$n_periods)
+  for (t in seq_len(object$n_periods)) {
+    fit <- object$period_fits[[t]]
+    if (!is.null(fit)) {
+      results[[t]] <- residuals.occu_inla(fit, type = type, ...)
+    }
+  }
+  results
+}
+
+
+# ---------------------------------------------------------------------------
+#  fitted for JSDM (no detection process)
+# ---------------------------------------------------------------------------
+
+#' Extract fitted values from a JSDM
+#'
+#' @param object fitted occu_inla_jsdm object
+#' @param ... ignored
+#' @return named list of per-species fitted probability vectors
+#' @export
+fitted.occu_inla_jsdm <- function(object, ...) {
+  results <- list()
+  for (s in seq_along(object$species_fits)) {
+    fit <- object$species_fits[[s]]
+    sp <- object$species_names[s]
+    if (!is.null(fit)) {
+      results[[sp]] <- expit(fit$summary.fitted.values$mean)
+    }
+  }
+  results
+}
+
+
+# ---------------------------------------------------------------------------
 #  ppcOccu  —  posterior predictive checks  (cf. ppcOcc)
 # ---------------------------------------------------------------------------
 
@@ -127,6 +336,7 @@ residuals.occu_inla <- function(object, type = c("deviance", "pearson", "respons
 #'     \item{fit.y.rep}{vector of fit statistic for replicated data}
 #'     \item{bayesian.p}{Bayesian p-value (proportion fit.y.rep > fit.y)}
 #'   }
+#' @export
 ppcOccu <- function(object, fit.stat = c("freeman-tukey", "chi-squared"),
                     group = 1, n.samples = 500) {
   fit.stat <- match.arg(fit.stat)
@@ -183,13 +393,21 @@ ppcOccu <- function(object, fit.stat = c("freeman-tukey", "chi-squared"),
     }
   }
 
+  # Group-level quantiles (spOccupancy compatibility)
+  fit.y.group.quants     <- apply(matrix(fit_y, ncol = 1), 2,
+                                   quantile, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
+  fit.y.rep.group.quants <- apply(matrix(fit_y_rep, ncol = 1), 2,
+                                   quantile, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
+
   list(
-    fit.y       = fit_y,
-    fit.y.rep   = fit_y_rep,
-    bayesian.p  = mean(fit_y_rep > fit_y),
-    fit.stat    = fit.stat,
-    group       = group,
-    n.samples   = n.samples
+    fit.y                  = fit_y,
+    fit.y.rep              = fit_y_rep,
+    fit.y.group.quants     = fit.y.group.quants,
+    fit.y.rep.group.quants = fit.y.rep.group.quants,
+    bayesian.p             = mean(fit_y_rep > fit_y),
+    fit.stat               = fit.stat,
+    group                  = group,
+    n.samples              = n.samples
   )
 }
 
@@ -207,6 +425,7 @@ ppcOccu <- function(object, fit.stat = c("freeman-tukey", "chi-squared"),
 #' @param by.sp logical: if TRUE and object is multi-species, return per-species WAIC
 #'
 #' @return data.frame with elpd, pD, and WAIC columns
+#' @export
 waicOccu <- function(object, by.sp = FALSE) {
 
   if (inherits(object, "occu_inla_ms") && by.sp) {
@@ -295,6 +514,7 @@ waicOccu <- function(object, by.sp = FALSE) {
 #'
 #' @param object fitted occu_inla_svc object
 #' @return list of data.frames (one per SVC) with site-level mean, sd, quantiles
+#' @export
 getSVCSamples <- function(object) {
   if (!inherits(object, "occu_inla_svc")) {
     stop("getSVCSamples requires an occu_inla_svc object")
@@ -333,18 +553,118 @@ getSVCSamples <- function(object) {
 #' Fit a post-hoc linear model relating covariates to estimated parameters
 #'
 #' Useful for exploring drivers of occupancy/detection variation.
-#' Accounts for uncertainty in the response (occupancy estimates) by
-#' using weighted regression.
+#' Supports both Bayesian (via INLA) and frequentist (\code{\link{lm}})
+#' fitting.
 #'
 #' @param formula model formula (e.g., psi_hat ~ trait1 + trait2)
 #' @param data data.frame with response and predictors
 #' @param weights optional weights (e.g., inverse of psi standard errors)
+#' @param method \code{"bayes"} (default, uses INLA) or \code{"freq"} (uses lm).
+#'   Falls back to \code{"freq"} if INLA is not available.
+#' @param n.samples number of posterior samples (default 1000, Bayesian only)
 #'
-#' @return lm or INLA fit object
-postHocLM <- function(formula, data, weights = NULL) {
-  if (is.null(weights)) {
+#' @return A list of class \code{"postHocLM"} with:
+#'   \describe{
+#'     \item{beta.samples}{matrix of posterior coefficient samples (Bayesian only)}
+#'     \item{tau.sq.samples}{posterior residual variance samples (Bayesian only)}
+#'     \item{y.hat.samples}{posterior fitted value samples (Bayesian only)}
+#'     \item{bayes.R2}{posterior samples of Bayesian R-squared (Bayesian only)}
+#'     \item{summary}{data.frame of coefficient summaries}
+#'     \item{lm.fit}{frequentist lm object (always available)}
+#'     \item{method}{character: which method was used}
+#'   }
+#' @export
+postHocLM <- function(formula, data, weights = NULL,
+                       method = c("bayes", "freq"),
+                       n.samples = 1000L) {
+  method <- match.arg(method)
+
+  # Always fit frequentist model
+  lm_fit <- if (is.null(weights)) {
     lm(formula, data = data)
   } else {
     lm(formula, data = data, weights = weights)
   }
+
+  # Try Bayesian version via INLA
+  if (method == "bayes" && requireNamespace("INLA", quietly = TRUE)) {
+    inla_fit <- tryCatch({
+      INLA::inla(
+        formula = formula,
+        family  = "gaussian",
+        data    = data,
+        control.compute = list(config = TRUE),
+        verbose = FALSE
+      )
+    }, error = function(e) NULL)
+
+    if (!is.null(inla_fit)) {
+      # Draw posterior samples
+      samples <- tryCatch(
+        INLA::inla.posterior.sample(n.samples, inla_fit),
+        error = function(e) NULL
+      )
+
+      if (!is.null(samples)) {
+        fix_names <- rownames(inla_fit$summary.fixed)
+        n_coef <- length(fix_names)
+
+        beta_samples <- matrix(NA_real_, n.samples, n_coef)
+        colnames(beta_samples) <- fix_names
+        tau_sq_samples <- numeric(n.samples)
+
+        X <- model.matrix(formula, data = data)
+        y_hat_samples <- matrix(NA_real_, n.samples, nrow(data))
+
+        for (s in seq_len(n.samples)) {
+          latent <- samples[[s]]$latent
+          latent_names <- rownames(latent)
+          for (k in seq_along(fix_names)) {
+            idx <- grep(paste0("^", fix_names[k], ":"), latent_names)
+            if (length(idx) > 0) beta_samples[s, k] <- latent[idx[1]]
+          }
+          # Residual precision → variance
+          hyp <- samples[[s]]$hyperpar
+          if (length(hyp) > 0) {
+            tau_sq_samples[s] <- 1 / max(hyp[1], 1e-8)
+          }
+          y_hat_samples[s, ] <- as.vector(X %*% beta_samples[s, ])
+        }
+
+        # Bayesian R-squared: var(y_hat) / (var(y_hat) + sigma^2)
+        resp_name <- as.character(formula)[2]
+        y_obs <- data[[resp_name]]
+        bayes_r2 <- numeric(n.samples)
+        for (s in seq_len(n.samples)) {
+          var_fit <- var(y_hat_samples[s, ])
+          bayes_r2[s] <- var_fit / (var_fit + tau_sq_samples[s])
+        }
+
+        out <- list(
+          beta.samples   = beta_samples,
+          tau.sq.samples = tau_sq_samples,
+          y.hat.samples  = y_hat_samples,
+          bayes.R2       = bayes_r2,
+          summary        = inla_fit$summary.fixed,
+          lm.fit         = lm_fit,
+          method         = "bayes"
+        )
+        class(out) <- "postHocLM"
+        return(out)
+      }
+    }
+  }
+
+  # Frequentist (explicit choice or INLA fallback)
+  out <- list(
+    beta.samples   = NULL,
+    tau.sq.samples = NULL,
+    y.hat.samples  = NULL,
+    bayes.R2       = NULL,
+    summary        = summary(lm_fit)$coefficients,
+    lm.fit         = lm_fit,
+    method         = "freq"
+  )
+  class(out) <- "postHocLM"
+  out
 }

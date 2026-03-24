@@ -11,13 +11,14 @@
 #' @param coords N x 2 matrix of coordinates
 #' @param max.edge numeric vector of length 2: max triangle edge length
 #'   (inner domain, outer extension). Default auto-scaled from data extent.
-#' @param cutoff minimum distance between mesh nodes. Default: max.edge[1]/5.
+#' @param cutoff minimum distance between mesh nodes. Default: `max.edge[1]/5`.
 #' @param offset numeric vector of length 2: inner and outer extension distances.
 #' @param prior.range numeric(2): PC prior for range. c(r0, p) means P(range < r0) = p.
 #' @param prior.sigma numeric(2): PC prior for marginal SD. c(s0, p) means P(sigma > s0) = p.
-#' @param alpha SPDE smoothness parameter (default 2 for Matern with nu = 1)
+#' @param alpha SPDE smoothness parameter (default 2, Matern nu = 1).
 #'
-#' @return object of class "occu_spatial" with mesh, spde, and A matrix components
+#' @return object of class \code{"occu_spatial"} with mesh, spde, and A matrix components
+#' @export
 occu_spatial <- function(coords,
                          max.edge = NULL,
                          cutoff = NULL,
@@ -82,6 +83,10 @@ occu_spatial <- function(coords,
 
 
 #' Print method for occu_spatial
+#' @param x an \code{occu_spatial} object
+#' @param ... additional arguments (ignored)
+#' @return The \code{occu_spatial} object \code{x}, returned invisibly.
+#' @export
 print.occu_spatial <- function(x, ...) {
   cat("SPDE spatial component (occu_spatial)\n")
   cat(sprintf("  Sites:      %d\n", x$n_sites))
@@ -95,19 +100,10 @@ print.occu_spatial <- function(x, ...) {
 }
 
 
-#' Build INLA stack for spatial occupancy model
-#'
-#' Creates the INLA data stack incorporating the SPDE projection matrix.
-#'
-#' @param df data.frame (occupancy or detection)
-#' @param spatial occu_spatial object
-#' @param site_col name of the site index column in df
-#' @param tag stack tag identifier
-#'
-#' @return INLA stack object
+#' @noRd
 build_spatial_stack <- function(df, spatial, site_col = "site",
                                 tag = "occ_spatial") {
-  check_inla()
+
 
   sites <- df[[site_col]]
   A_obs <- spatial$A[sites, , drop = FALSE]
@@ -127,28 +123,17 @@ build_spatial_stack <- function(df, spatial, site_col = "site",
 }
 
 
-#' Build spatial A matrix for prediction locations
-#'
-#' @param spatial occu_spatial object
-#' @param newcoords matrix of new coordinates (n_pred x 2)
-#'
-#' @return INLA projection matrix for prediction
+#' @noRd
 predict_spatial_A <- function(spatial, newcoords) {
-  check_inla()
+
   if (!is.matrix(newcoords)) newcoords <- as.matrix(newcoords)
   INLA::inla.spde.make.A(mesh = spatial$mesh, loc = newcoords)
 }
 
 
-#' Extract spatial field from fitted model
-#'
-#' @param fit INLA fit object
-#' @param spatial occu_spatial object
-#' @param name name of the spatial effect in the model (default "spatial")
-#'
-#' @return list with mean, sd, and quantiles of the spatial field at mesh nodes
+#' @noRd
 extract_spatial_field <- function(fit, spatial, name = "spatial") {
-  check_inla()
+
 
   idx <- fit$summary.random[[name]]
 
@@ -167,18 +152,10 @@ extract_spatial_field <- function(fit, spatial, name = "spatial") {
 }
 
 
-#' Project spatial field to a regular grid for plotting
-#'
-#' @param spatial_field output from extract_spatial_field
-#' @param spatial occu_spatial object
-#' @param n_grid number of grid cells per dimension
-#' @param xlim x-axis limits (default: data range)
-#' @param ylim y-axis limits (default: data range)
-#'
-#' @return list with x, y grid vectors and z matrix of mean spatial field
+#' @noRd
 project_spatial_grid <- function(spatial_field, spatial,
                                  n_grid = 100, xlim = NULL, ylim = NULL) {
-  check_inla()
+
 
   coords <- spatial$coords
   if (is.null(xlim)) xlim <- range(coords[, 1])

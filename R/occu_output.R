@@ -5,11 +5,28 @@
 #' Summary method for occu_inla fits
 #'
 #' @param object fitted occu_inla object
+#' @param level character vector of parameter groups to display. Options:
+#'   \code{"beta"} (occupancy fixed), \code{"alpha"} (detection fixed),
+#'   \code{"sigma.sq.psi"} (occupancy hyperparams), \code{"sigma.sq.p"}
+#'   (detection hyperparams). Default shows all available.
+#' @param quantiles numeric vector of quantile levels for credible intervals
+#'   (default: \code{c(0.025, 0.5, 0.975)}).
+#' @param digits number of digits to print (default 4).
 #' @param ... additional arguments (ignored)
-#' @return invisibly returns a summary list
-summary.occu_inla <- function(object, ...) {
-  cat("=== Occupancy Model (INLA-Laplace) ===\n\n")
+#' @return Invisibly returns a summary list with occupancy and detection
+#'   fixed effects, and estimated probabilities.
+#' @export
+summary.occu_inla <- function(object, level = NULL,
+                               quantiles = c(0.025, 0.5, 0.975),
+                               digits = 4L, ...) {
+  # Determine which quantile columns exist in INLA output
+  q_cols <- paste0(quantiles, "quant")
+  available_q <- intersect(q_cols, names(object$occ_fit$summary.fixed))
+  show_cols <- c("mean", "sd", available_q)
 
+  show_all <- is.null(level)
+
+  cat("=== Occupancy Model (INLA-Laplace) ===\n\n")
   cat(sprintf("Sites: %d | Max visits: %d\n", object$data$N, object$data$J))
   cat(sprintf("Naive occupancy: %.3f | Naive detection: %.3f\n",
               object$data$naive_occ,
@@ -17,65 +34,61 @@ summary.occu_inla <- function(object, ...) {
   cat(sprintf("EM iterations: %d | Converged: %s\n\n",
               object$n_iter, object$converged))
 
-  # Occupancy fixed effects
-  cat("--- Occupancy (psi) ---\n")
   occ_fixed <- object$occ_fit$summary.fixed
-  occ_fixed$signif <- ifelse(
-    sign(occ_fixed$`0.025quant`) == sign(occ_fixed$`0.975quant`), "*", ""
-  )
-  print(round(occ_fixed[, c("mean", "sd", "0.025quant", "0.975quant")], 4))
-  cat("\n")
-
-  # Detection fixed effects
-  cat("--- Detection (p) ---\n")
   det_fixed <- object$det_fit$summary.fixed
-  det_fixed$signif <- ifelse(
-    sign(det_fixed$`0.025quant`) == sign(det_fixed$`0.975quant`), "*", ""
-  )
-  print(round(det_fixed[, c("mean", "sd", "0.025quant", "0.975quant")], 4))
-  cat("\n")
 
-  # Random effects
-  if (length(object$occ_fit$summary.hyperpar) > 0) {
-    cat("--- Hyperparameters (Occupancy) ---\n")
+  if (show_all || "beta" %in% level) {
+    cat("--- Occupancy (psi) ---\n")
+    print(round(occ_fixed[, intersect(show_cols, names(occ_fixed)), drop = FALSE], digits))
+    cat("\n")
+  }
+
+  if (show_all || "alpha" %in% level) {
+    cat("--- Detection (p) ---\n")
+    print(round(det_fixed[, intersect(show_cols, names(det_fixed)), drop = FALSE], digits))
+    cat("\n")
+  }
+
+  if ((show_all || "sigma.sq.psi" %in% level) &&
+      length(object$occ_fit$summary.hyperpar) > 0) {
     hyp_occ <- object$occ_fit$summary.hyperpar
     if (nrow(hyp_occ) > 0) {
-      print(round(hyp_occ[, c("mean", "sd", "0.025quant", "0.975quant")], 4))
+      cat("--- Hyperparameters (Occupancy) ---\n")
+      print(round(hyp_occ[, intersect(show_cols, names(hyp_occ)), drop = FALSE], digits))
+      cat("\n")
     }
-    cat("\n")
   }
 
-  if (length(object$det_fit$summary.hyperpar) > 0) {
-    cat("--- Hyperparameters (Detection) ---\n")
+  if ((show_all || "sigma.sq.p" %in% level) &&
+      length(object$det_fit$summary.hyperpar) > 0) {
     hyp_det <- object$det_fit$summary.hyperpar
     if (nrow(hyp_det) > 0) {
-      print(round(hyp_det[, c("mean", "sd", "0.025quant", "0.975quant")], 4))
+      cat("--- Hyperparameters (Detection) ---\n")
+      print(round(hyp_det[, intersect(show_cols, names(hyp_det)), drop = FALSE], digits))
+      cat("\n")
     }
-    cat("\n")
   }
 
-  # Model fit
-  cat("--- Model Fit ---\n")
-  cat(sprintf("Marginal log-likelihood: %.2f\n",
-              tail(object$history, 1)[[1]]$loglik))
-  if (!is.null(object$occ_fit$waic)) {
-    cat(sprintf("WAIC (occupancy):  %.2f\n", object$occ_fit$waic$waic))
-  }
-  if (!is.null(object$det_fit$waic)) {
-    cat(sprintf("WAIC (detection):  %.2f\n", object$det_fit$waic$waic))
-  }
+  if (show_all) {
+    cat("--- Model Fit ---\n")
+    cat(sprintf("Marginal log-likelihood: %.2f\n",
+                tail(object$history, 1)[[1]]$loglik))
+    if (!is.null(object$occ_fit$waic))
+      cat(sprintf("WAIC (occupancy):  %.2f\n", object$occ_fit$waic$waic))
+    if (!is.null(object$det_fit$waic))
+      cat(sprintf("WAIC (detection):  %.2f\n", object$det_fit$waic$waic))
 
-  # Derived quantities
-  cat(sprintf("\nEstimated occupancy: %.3f (%.3f - %.3f)\n",
-              mean(object$psi_hat),
-              quantile(object$psi_hat, 0.025),
-              quantile(object$psi_hat, 0.975)))
-  cat(sprintf("Estimated detection: %.3f (%.3f - %.3f)\n",
-              mean(object$p_hat, na.rm = TRUE),
-              quantile(object$p_hat, 0.025, na.rm = TRUE),
-              quantile(object$p_hat, 0.975, na.rm = TRUE)))
-  cat(sprintf("Estimated occupied sites: %.1f / %d\n",
-              sum(object$z_hat), object$data$N))
+    cat(sprintf("\nEstimated occupancy: %.3f (%.3f - %.3f)\n",
+                mean(object$psi_hat),
+                quantile(object$psi_hat, 0.025),
+                quantile(object$psi_hat, 0.975)))
+    cat(sprintf("Estimated detection: %.3f (%.3f - %.3f)\n",
+                mean(object$p_hat, na.rm = TRUE),
+                quantile(object$p_hat, 0.025, na.rm = TRUE),
+                quantile(object$p_hat, 0.975, na.rm = TRUE)))
+    cat(sprintf("Estimated occupied sites: %.1f / %d\n",
+                sum(object$z_hat), object$data$N))
+  }
 
   invisible(list(
     occ_fixed = occ_fixed,
@@ -88,6 +101,10 @@ summary.occu_inla <- function(object, ...) {
 
 
 #' Summary for spatial occupancy model
+#' @param object fitted occu_inla_spatial object
+#' @param ... additional arguments (ignored)
+#' @return Invisibly returns the spatial summary via the base summary method.
+#' @export
 summary.occu_inla_spatial <- function(object, ...) {
   # Call base summary
   NextMethod()
@@ -108,6 +125,10 @@ summary.occu_inla_spatial <- function(object, ...) {
 
 
 #' Summary for multi-species model
+#' @param object fitted occu_inla_ms object
+#' @param ... additional arguments (ignored)
+#' @return The multi-species model object, returned invisibly.
+#' @export
 summary.occu_inla_ms <- function(object, ...) {
   cat("=== Multi-Species Occupancy Model (INLA-Laplace) ===\n\n")
   cat(sprintf("Species: %d | Sites: %d | Max visits: %d\n\n",
@@ -156,6 +177,10 @@ summary.occu_inla_ms <- function(object, ...) {
 
 
 #' Print method for occu_inla
+#' @param x fitted occu_inla object
+#' @param ... additional arguments (ignored)
+#' @return The \code{occu_inla} object \code{x}, returned invisibly.
+#' @export
 print.occu_inla <- function(x, ...) {
   cat("Occupancy model (INLA-Laplace)\n")
   cat(sprintf("  %d sites, %d max visits\n", x$data$N, x$data$J))
@@ -172,10 +197,12 @@ print.occu_inla <- function(x, ...) {
 #' Plot diagnostics for occu_inla
 #'
 #' @param x fitted occu_inla object
-#' @param which integer vector: which plots to show
+#' @param which integer vector: which plots to show.
 #'   1 = EM convergence, 2 = psi histogram, 3 = p histogram,
-#'   4 = psi vs covariates, 5 = residuals
+#'   4 = psi vs covariates.
 #' @param ... additional arguments passed to plot
+#' @return The \code{occu_inla} object \code{x}, returned invisibly.
+#' @export
 plot.occu_inla <- function(x, which = 1:4, ...) {
   if (1 %in% which) {
     # EM convergence trace
@@ -221,12 +248,7 @@ plot.occu_inla <- function(x, which = 1:4, ...) {
 }
 
 
-#' Plot spatial occupancy map
-#'
-#' @param x fitted occu_inla_spatial object
-#' @param what "psi" (occupancy), "spatial" (spatial field), or "z" (occupancy state)
-#' @param n_grid grid resolution for spatial field
-#' @param ... additional arguments to image()
+#' @noRd
 plot_spatial <- function(x, what = c("psi", "spatial", "z"),
                          n_grid = 100, ...) {
   what <- match.arg(what)
@@ -269,10 +291,333 @@ plot_spatial <- function(x, what = c("psi", "spatial", "z"),
 }
 
 
+# =============================================================================
+# Integrated (multi-source) methods
+# =============================================================================
+
+#' Summary for integrated occupancy model
+#' @param object fitted occu_inla_int object
+#' @param ... additional arguments (ignored)
+#' @return Invisibly returns a summary list.
+#' @export
+summary.occu_inla_int <- function(object, ...) {
+  N_total <- nrow(object$data$occ.covs)
+  cat("=== Integrated Occupancy Model (INLA-Laplace) ===\n\n")
+  cat(sprintf("Data sources: %d | Total sites: %d\n", object$n_data, N_total))
+  cat(sprintf("EM iterations: %d | Converged: %s\n\n",
+              object$n_iter, object$converged))
+
+  for (d in seq_len(object$n_data)) {
+    cat(sprintf("  Source %d: %d sites, %d max visits\n",
+                d, nrow(object$data$y[[d]]), ncol(object$data$y[[d]])))
+  }
+  cat("\n")
+
+  # Shared occupancy fixed effects
+  cat("--- Occupancy (psi, shared) ---\n")
+  occ_fixed <- object$occ_fit$summary.fixed
+  print(round(occ_fixed[, c("mean", "sd", "0.025quant", "0.975quant")], 4))
+  cat("\n")
+
+  # Per-source detection fixed effects
+  for (d in seq_len(object$n_data)) {
+    cat(sprintf("--- Detection (p, source %d) ---\n", d))
+    if (!is.null(object$det_fits[[d]])) {
+      det_fixed <- object$det_fits[[d]]$summary.fixed
+      print(round(det_fixed[, c("mean", "sd", "0.025quant", "0.975quant")], 4))
+    } else {
+      cat("  (not available)\n")
+    }
+    cat("\n")
+  }
+
+  cat(sprintf("Estimated occupancy: %.3f (%.3f - %.3f)\n",
+              mean(object$psi_hat),
+              quantile(object$psi_hat, 0.025),
+              quantile(object$psi_hat, 0.975)))
+  cat(sprintf("Estimated occupied sites: %.1f / %d\n",
+              sum(object$z_hat), N_total))
+
+  invisible(object)
+}
+
+
+#' Print method for integrated occupancy model
+#' @param x fitted occu_inla_int object
+#' @param ... additional arguments (ignored)
+#' @return The object \code{x}, returned invisibly.
+#' @export
+print.occu_inla_int <- function(x, ...) {
+  N_total <- nrow(x$data$occ.covs)
+  cat("Integrated occupancy model (INLA-Laplace)\n")
+  cat(sprintf("  %d data sources, %d total sites\n", x$n_data, N_total))
+  cat(sprintf("  Occ formula: %s\n", deparse(x$occ_formula)))
+  cat(sprintf("  EM: %d iterations, converged = %s\n",
+              x$n_iter, x$converged))
+  cat(sprintf("  Mean psi = %.3f\n", mean(x$psi_hat)))
+  invisible(x)
+}
+
+
+# =============================================================================
+# Multi-species methods
+# =============================================================================
+
+#' Print method for multi-species occupancy model
+#' @param x fitted occu_inla_ms object
+#' @param ... additional arguments (ignored)
+#' @return The object \code{x}, returned invisibly.
+#' @export
+print.occu_inla_ms <- function(x, ...) {
+  cat("Multi-species occupancy model (INLA-Laplace)\n")
+  cat(sprintf("  %d species, %d sites, %d max visits\n",
+              x$n_species, x$data$N, x$data$J))
+  cat(sprintf("  Occ formula: %s\n", deparse(x$occ.formula)))
+  cat(sprintf("  Det formula: %s\n", deparse(x$det.formula)))
+  n_ok <- sum(vapply(x$species_fits, function(f) !is.null(f), logical(1)))
+  cat(sprintf("  Successfully fitted: %d / %d species\n", n_ok, x$n_species))
+  invisible(x)
+}
+
+
+#' Plot diagnostics for multi-species occupancy model
+#'
+#' @param x fitted occu_inla_ms object
+#' @param which integer vector: which plots to show.
+#'   1 = per-species occupancy, 2 = per-species detection,
+#'   3 = community effects.
+#' @param ... additional arguments passed to plot
+#' @return The object \code{x}, returned invisibly.
+#' @export
+plot.occu_inla_ms <- function(x, which = 1:2, ...) {
+  psi_means <- vapply(x$species_names, function(sp) {
+    fit <- x$species_fits[[sp]]
+    if (!is.null(fit)) mean(fit$psi_hat) else NA_real_
+  }, numeric(1))
+
+  p_means <- vapply(x$species_names, function(sp) {
+    fit <- x$species_fits[[sp]]
+    if (!is.null(fit)) mean(fit$p_hat, na.rm = TRUE) else NA_real_
+  }, numeric(1))
+
+  if (1 %in% which) {
+    ord <- order(psi_means, na.last = TRUE)
+    barplot(psi_means[ord], names.arg = x$species_names[ord],
+            las = 2, col = "steelblue", border = "white",
+            main = "Estimated Occupancy by Species",
+            ylab = expression(hat(psi)), ...)
+  }
+
+  if (2 %in% which) {
+    ord <- order(p_means, na.last = TRUE)
+    barplot(p_means[ord], names.arg = x$species_names[ord],
+            las = 2, col = "darkorange", border = "white",
+            main = "Estimated Detection by Species",
+            ylab = expression(hat(p)), ...)
+  }
+
+  invisible(x)
+}
+
+
+# =============================================================================
+# Temporal (multi-season) methods
+# =============================================================================
+
+#' Print method for temporal occupancy model
+#' @param x fitted occu_inla_temporal object
+#' @param ... additional arguments (ignored)
+#' @return The object \code{x}, returned invisibly.
+#' @export
+print.occu_inla_temporal <- function(x, ...) {
+  N <- if (length(x$data_list) > 0) x$data_list[[1]]$N else NA
+  cat("Temporal occupancy model (INLA-Laplace)\n")
+  cat(sprintf("  %d periods, %d sites\n", x$n_periods, N))
+  cat(sprintf("  Occ formula: %s\n", deparse(x$occ.formula)))
+  cat(sprintf("  Det formula: %s\n", deparse(x$det.formula)))
+  cat(sprintf("  AR(1): %s\n", x$ar1))
+  n_ok <- sum(vapply(x$period_fits, function(f) !is.null(f), logical(1)))
+  cat(sprintf("  Successfully fitted: %d / %d periods\n", n_ok, x$n_periods))
+  invisible(x)
+}
+
+
+#' Summary for temporal occupancy model
+#' @param object fitted occu_inla_temporal object
+#' @param ... additional arguments (ignored)
+#' @return Invisibly returns a per-period summary data.frame.
+#' @export
+summary.occu_inla_temporal <- function(object, ...) {
+  N <- if (length(object$data_list) > 0) object$data_list[[1]]$N else NA
+  cat("=== Temporal Occupancy Model (INLA-Laplace) ===\n\n")
+  cat(sprintf("Periods: %d | Sites: %d | AR(1): %s\n\n",
+              object$n_periods, N, object$ar1))
+
+  period_table <- data.frame(
+    period    = seq_len(object$n_periods),
+    est_psi   = NA_real_,
+    est_p     = NA_real_,
+    n_iter    = NA_integer_,
+    converged = NA
+  )
+
+  for (t in seq_len(object$n_periods)) {
+    fit <- object$period_fits[[t]]
+    if (!is.null(fit)) {
+      period_table$est_psi[t]   <- mean(fit$psi_hat)
+      period_table$est_p[t]     <- mean(fit$p_hat, na.rm = TRUE)
+      period_table$n_iter[t]    <- fit$n_iter
+      period_table$converged[t] <- fit$converged
+    }
+  }
+
+  cat("--- Per-Period Summary ---\n")
+  print(period_table, row.names = FALSE)
+
+  if (!is.null(object$psi_smoothed)) {
+    cat(sprintf("\nAR(1)-smoothed occupancy range: %.3f - %.3f\n",
+                min(object$psi_smoothed), max(object$psi_smoothed)))
+  }
+
+  invisible(period_table)
+}
+
+
+#' Plot diagnostics for temporal occupancy model
+#'
+#' @param x fitted occu_inla_temporal object
+#' @param which integer vector: which plots to show.
+#'   1 = occupancy over time, 2 = detection over time.
+#' @param ... additional arguments passed to plot
+#' @return The object \code{x}, returned invisibly.
+#' @export
+plot.occu_inla_temporal <- function(x, which = 1:2, ...) {
+  periods <- seq_len(x$n_periods)
+
+  psi_means <- vapply(periods, function(t) {
+    fit <- x$period_fits[[t]]
+    if (!is.null(fit)) mean(fit$psi_hat) else NA_real_
+  }, numeric(1))
+
+  p_means <- vapply(periods, function(t) {
+    fit <- x$period_fits[[t]]
+    if (!is.null(fit)) mean(fit$p_hat, na.rm = TRUE) else NA_real_
+  }, numeric(1))
+
+  if (1 %in% which) {
+    plot(periods, psi_means, type = "b", pch = 16, col = "steelblue",
+         xlab = "Period", ylab = expression(hat(psi)),
+         main = "Occupancy Over Time", ylim = c(0, 1), ...)
+    if (!is.null(x$psi_smoothed)) {
+      smoothed_means <- colMeans(x$psi_smoothed)
+      lines(periods, smoothed_means, col = "red", lty = 2, lwd = 2)
+    }
+  }
+
+  if (2 %in% which) {
+    plot(periods, p_means, type = "b", pch = 16, col = "darkorange",
+         xlab = "Period", ylab = expression(hat(p)),
+         main = "Detection Over Time", ylim = c(0, 1), ...)
+  }
+
+  invisible(x)
+}
+
+
+# =============================================================================
+# JSDM methods
+# =============================================================================
+
+#' Print method for JSDM
+#' @param x fitted occu_inla_jsdm object
+#' @param ... additional arguments (ignored)
+#' @return The object \code{x}, returned invisibly.
+#' @export
+print.occu_inla_jsdm <- function(x, ...) {
+  cat("Joint species distribution model (INLA-Laplace)\n")
+  cat(sprintf("  %d species, %d sites, %d latent factors\n",
+              x$n_species, nrow(x$data$y[1, , drop = FALSE]), x$n.factors))
+  cat(sprintf("  Formula: %s\n", deparse(x$formula)))
+  n_ok <- sum(vapply(x$species_fits, function(f) !is.null(f), logical(1)))
+  cat(sprintf("  Successfully fitted: %d / %d species\n", n_ok, x$n_species))
+  invisible(x)
+}
+
+
+#' Summary for JSDM
+#' @param object fitted occu_inla_jsdm object
+#' @param ... additional arguments (ignored)
+#' @return Invisibly returns a per-species summary data.frame.
+#' @export
+summary.occu_inla_jsdm <- function(object, ...) {
+  cat("=== Joint Species Distribution Model (INLA-Laplace) ===\n\n")
+  cat(sprintf("Species: %d | Latent factors: %d\n\n",
+              object$n_species, object$n.factors))
+
+  sp_table <- data.frame(
+    species  = object$species_names,
+    est_psi  = NA_real_
+  )
+
+  for (s in seq_along(object$species_names)) {
+    fit <- object$species_fits[[s]]
+    if (!is.null(fit)) {
+      sp_table$est_psi[s] <- mean(expit(fit$summary.fitted.values$mean))
+    }
+  }
+
+  cat("--- Per-Species Occupancy ---\n")
+  print(sp_table, row.names = FALSE)
+
+  cat("\n--- Factor Loadings (lambda) ---\n")
+  lam <- object$lambda
+  rownames(lam) <- object$species_names
+  colnames(lam) <- paste0("F", seq_len(ncol(lam)))
+  print(round(lam, 3))
+
+  invisible(sp_table)
+}
+
+
+#' Plot diagnostics for JSDM
+#'
+#' @param x fitted occu_inla_jsdm object
+#' @param which integer vector: which plots to show.
+#'   1 = species occupancy, 2 = factor loadings heatmap.
+#' @param ... additional arguments passed to plot
+#' @return The object \code{x}, returned invisibly.
+#' @export
+plot.occu_inla_jsdm <- function(x, which = 1:2, ...) {
+  if (1 %in% which) {
+    psi_means <- vapply(seq_along(x$species_fits), function(s) {
+      fit <- x$species_fits[[s]]
+      if (!is.null(fit)) mean(expit(fit$summary.fitted.values$mean)) else NA_real_
+    }, numeric(1))
+    names(psi_means) <- x$species_names
+    ord <- order(psi_means, na.last = TRUE)
+    barplot(psi_means[ord], names.arg = x$species_names[ord],
+            las = 2, col = "steelblue", border = "white",
+            main = "Estimated Occupancy by Species",
+            ylab = expression(hat(psi)), ...)
+  }
+
+  if (2 %in% which) {
+    lam <- x$lambda
+    image(seq_len(ncol(lam)), seq_len(nrow(lam)), t(lam),
+          col = hcl.colors(100, "Blue-Red 3"),
+          xlab = "Factor", ylab = "Species",
+          main = "Factor Loadings", ...)
+  }
+
+  invisible(x)
+}
+
+
 #' Compare two occupancy models via WAIC
 #'
-#' @param ... named list of occu_inla objects
+#' @param ... named occu_inla objects to compare
 #' @return data.frame with model comparison metrics
+#' @export
 compare_models <- function(...) {
   models <- list(...)
   if (is.null(names(models))) {

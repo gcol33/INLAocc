@@ -13,16 +13,7 @@
 #   - Is computationally efficient (INLA is fast per iteration)
 # =============================================================================
 
-#' Fit a single INLA detection sub-model (M-step for p)
-#'
-#' @param data occu_data object
-#' @param det_formula formula for detection (RHS only, no response)
-#' @param weights length-N site-level weights from E-step
-#' @param det_re_list optional list of occu_re objects for detection
-#' @param control.inla INLA control options
-#' @param verbose print INLA progress
-#'
-#' @return list with $fit (INLA object), $p_hat (N x J matrix of fitted p)
+#' @noRd
 fit_detection_inla <- function(data, det_formula, weights,
                                det_re_list = NULL,
                                control.inla = NULL,
@@ -87,17 +78,7 @@ fit_detection_inla <- function(data, det_formula, weights,
 }
 
 
-#' Fit a single INLA occupancy sub-model (M-step for psi)
-#'
-#' @param data occu_data object
-#' @param occ_formula formula for occupancy (RHS only)
-#' @param weights length-N E-step weights
-#' @param occ_re_list optional list of occu_re objects for occupancy
-#' @param spatial optional occu_spatial object
-#' @param control.inla INLA control options
-#' @param verbose print INLA progress
-#'
-#' @return list with $fit (INLA object), $psi_hat (length-N vector)
+#' @noRd
 fit_occupancy_inla <- function(data, occ_formula, weights,
                                occ_re_list = NULL,
                                spatial = NULL,
@@ -201,24 +182,7 @@ fit_occupancy_inla <- function(data, occ_formula, weights,
 }
 
 
-#' EM-INLA engine for occupancy models
-#'
-#' Iterates between E-step (compute z weights) and M-step (fit INLA sub-models)
-#' until convergence.
-#'
-#' @param data occu_data object
-#' @param occ_formula occupancy formula (RHS, e.g. ~ elev + I(elev^2))
-#' @param det_formula detection formula (RHS, e.g. ~ effort + date)
-#' @param occ_re list of occu_re objects for occupancy random effects
-#' @param det_re list of occu_re objects for detection random effects
-#' @param spatial occu_spatial object (or NULL)
-#' @param max_iter maximum EM iterations
-#' @param tol convergence tolerance (max absolute change in psi and p)
-#' @param damping damping factor for E-step weights (0 = no damping, 1 = full damping)
-#' @param control.inla INLA control options
-#' @param verbose integer: 0 = silent, 1 = iteration summaries, 2 = full INLA output
-#'
-#' @return list of class "occu_em" with fit results, convergence info, etc.
+#' @noRd
 em_inla <- function(data, occ_formula, det_formula,
                     occ_re = NULL, det_re = NULL,
                     spatial = NULL, priors = NULL,

@@ -20,6 +20,7 @@
 #'
 #' @return list with psi.0 (occupancy predictions), p.0 (detection predictions),
 #'   z.0 (latent state predictions)
+#' @export
 predict.occu_inla <- function(object, X.0 = NULL, X.p.0 = NULL,
                               coords.0 = NULL,
                               ignore.RE = FALSE,
@@ -189,6 +190,7 @@ predict.occu_inla <- function(object, X.0 = NULL, X.p.0 = NULL,
 #' @param n.samples number of posterior samples
 #'
 #' @return list with predicted psi at new locations
+#' @export
 predict_spatial <- function(object, newcoords, newocc.covs = NULL,
                             ignore.RE = FALSE, n.samples = 500) {
   check_inla()
@@ -218,6 +220,7 @@ predict_spatial <- function(object, newcoords, newocc.covs = NULL,
 #'
 #' @param object fitted occu_inla_ms object
 #' @return data.frame with site-level richness estimates and uncertainty
+#' @export
 richness <- function(object) {
   if (!inherits(object, "occu_inla_ms")) {
     stop("richness() requires an occu_inla_ms object")
@@ -256,6 +259,7 @@ richness <- function(object) {
 #' @param other.means named list of values for other covariates (default: means)
 #'
 #' @return data.frame with covariate values and predicted probability + CI
+#' @export
 marginal_effect <- function(object, covariate,
                             process = c("occupancy", "detection"),
                             values = NULL, n_points = 100,
@@ -327,4 +331,95 @@ marginal_effect <- function(object, covariate,
     eta       = eta,
     eta_sd    = eta_sd
   )
+}
+
+
+# =============================================================================
+# Predict methods for non-base model classes
+# =============================================================================
+
+#' Predict from an integrated occupancy model
+#'
+#' Returns in-sample predictions. For out-of-sample, use the shared
+#' occupancy component via the base \code{predict.occu_inla} method
+#' on the \code{occ_fit} sub-object.
+#'
+#' @param object fitted occu_inla_int object
+#' @param ... additional arguments (ignored)
+#' @return list with psi.0 (shared occupancy) and per-source p.0
+#' @export
+predict.occu_inla_int <- function(object, ...) {
+  list(
+    psi.0 = list(mean = object$psi_hat),
+    z.0   = list(mean = object$z_hat),
+    p.0   = object$p_hats
+  )
+}
+
+
+#' Predict from a multi-species occupancy model
+#'
+#' Returns per-species predictions by delegating to the base predict method.
+#'
+#' @param object fitted occu_inla_ms object
+#' @param ... additional arguments passed to \code{predict.occu_inla}
+#' @return named list of per-species prediction results
+#' @export
+predict.occu_inla_ms <- function(object, ...) {
+  results <- list()
+  for (sp in object$species_names) {
+    fit <- object$species_fits[[sp]]
+    if (!is.null(fit)) {
+      results[[sp]] <- predict.occu_inla(fit, ...)
+    }
+  }
+  results
+}
+
+
+#' Predict from a temporal occupancy model
+#'
+#' Returns per-period predictions. If AR(1) smoothing was applied,
+#' includes the smoothed occupancy estimates.
+#'
+#' @param object fitted occu_inla_temporal object
+#' @param ... additional arguments passed to \code{predict.occu_inla}
+#' @return list with per-period predictions and optional smoothed psi
+#' @export
+predict.occu_inla_temporal <- function(object, ...) {
+  period_preds <- vector("list", object$n_periods)
+  for (t in seq_len(object$n_periods)) {
+    fit <- object$period_fits[[t]]
+    if (!is.null(fit)) {
+      period_preds[[t]] <- predict.occu_inla(fit, ...)
+    }
+  }
+
+  list(
+    period_predictions = period_preds,
+    psi_smoothed       = object$psi_smoothed
+  )
+}
+
+
+#' Predict from a JSDM
+#'
+#' Returns per-species occupancy predictions (no detection process).
+#'
+#' @param object fitted occu_inla_jsdm object
+#' @param ... additional arguments (ignored)
+#' @return named list of per-species occupancy probability vectors
+#' @export
+predict.occu_inla_jsdm <- function(object, ...) {
+  results <- list()
+  for (s in seq_along(object$species_fits)) {
+    fit <- object$species_fits[[s]]
+    sp <- object$species_names[s]
+    if (!is.null(fit)) {
+      results[[sp]] <- list(
+        psi.0 = list(mean = expit(fit$summary.fitted.values$mean))
+      )
+    }
+  }
+  results
 }

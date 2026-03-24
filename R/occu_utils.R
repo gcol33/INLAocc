@@ -2,30 +2,22 @@
 # occu_utils.R — Internal utilities for INLA occupancy framework
 # =============================================================================
 
-#' Inverse logit (expit) function
-#' @param x numeric vector
-#' @return numeric vector of probabilities
+#' @noRd
 expit <- function(x) {
   1 / (1 + exp(-x))
 }
 
-#' Logit function
-#' @param p numeric vector of probabilities
-#' @return numeric vector on log-odds scale
+#' @noRd
 logit <- function(p) {
   log(p / (1 - p))
 }
 
-#' Clamp values to [lo, hi]
+#' @noRd
 clamp <- function(x, lo = 1e-8, hi = 1 - 1e-8) {
   pmin(pmax(x, lo), hi)
 }
 
-#' Compute marginal log-likelihood for occupancy model
-#' @param y N x J detection matrix
-#' @param psi length-N occupancy probabilities
-#' @param p N x J detection probabilities
-#' @return scalar log-likelihood
+#' @noRd
 occu_loglik <- function(y, psi, p) {
   N <- nrow(y)
   J <- ncol(y)
@@ -52,11 +44,7 @@ occu_loglik <- function(y, psi, p) {
   ll
 }
 
-#' Compute E-step weights: P(z_i = 1 | y_i, psi_i, p_i)
-#' @param y N x J detection matrix
-#' @param psi length-N occupancy probabilities
-#' @param p N x J detection probabilities
-#' @return length-N vector of weights (1 for detected sites)
+#' @noRd
 compute_weights <- function(y, psi, p) {
   N <- nrow(y)
   w <- rep(1, N)
@@ -82,13 +70,7 @@ compute_weights <- function(y, psi, p) {
   w
 }
 
-#' Build detection data frame for INLA (long format)
-#' @param y N x J detection matrix
-#' @param det_covs named list of N x J covariate matrices
-#' @param site_idx integer site indices (for random effects)
-#' @param weights length-N site-level weights
-#' @param visit_idx optional: visit-level grouping index (N x J matrix)
-#' @return data.frame in long format
+#' @noRd
 build_det_df <- function(y, det_covs = NULL, site_idx = NULL,
                          weights = NULL, visit_idx = NULL) {
   N <- nrow(y)
@@ -126,19 +108,7 @@ build_det_df <- function(y, det_covs = NULL, site_idx = NULL,
   do.call(rbind, lapply(rows, as.data.frame))
 }
 
-#' Build occupancy data frame for INLA (one row per site)
-#'
-#' Uses a scaled binomial response: each site contributes one row with
-#' z = round(w_i * M) and Ntrials = M. This encodes the fractional
-#' E-step weight as integer counts, preserving the grouping structure
-#' needed for random effect estimation.
-#'
-#' @param occ_covs data.frame of site-level covariates (N rows)
-#' @param weights length-N E-step weights (P(z=1 | y, theta))
-#' @param site_idx integer site indices
-#' @param detected logical length-N: was species detected at site?
-#' @param M integer: scaling factor for binomial counts (higher = finer resolution)
-#' @return data.frame with one row per site, plus z and Ntrials columns
+#' @noRd
 build_occ_df <- function(occ_covs, weights, site_idx = NULL,
                          detected = NULL, M = 1000L) {
   N <- nrow(occ_covs)
@@ -156,14 +126,7 @@ build_occ_df <- function(occ_covs, weights, site_idx = NULL,
   df
 }
 
-#' Parse formula with lme4-style random effects using lme4's own parser
-#'
-#' Uses lme4::findbars() and lme4::nobars() to properly extract (1 | group),
-#' (x | group), and (1 + x | group) terms. Falls back to regex if lme4 is
-#' not installed.
-#'
-#' @param formula a one-sided formula, possibly with (1 | group) or (x | group) terms
-#' @return list with $fixed (formula without RE terms), $re_list (list of occu_re objects)
+#' @noRd
 parse_re_formula <- function(formula) {
   has_lme4 <- requireNamespace("lme4", quietly = TRUE)
 
@@ -247,10 +210,7 @@ parse_re_formula <- function(formula) {
 }
 
 
-#' Parse two-part occupancy formula
-#' @param occ_formula formula for occupancy process (psi)
-#' @param det_formula formula for detection process (p)
-#' @return list with parsed components including extracted random effects
+#' @noRd
 parse_occu_formula <- function(occ_formula, det_formula) {
   occ_parsed <- parse_re_formula(occ_formula)
   det_parsed <- parse_re_formula(det_formula)
@@ -265,10 +225,7 @@ parse_occu_formula <- function(occ_formula, det_formula) {
   )
 }
 
-#' Extract INLA fitted values as probabilities
-#' @param fit INLA model fit
-#' @param link "logit" or "probit"
-#' @return vector of fitted probabilities
+#' @noRd
 inla_fitted_prob <- function(fit, link = "logit") {
   eta <- fit$summary.fitted.values$mean
   if (link == "logit") {
@@ -293,7 +250,8 @@ inla_fitted_prob <- function(fit, link = "logit") {
 #' @param tau.sq.beta.ig list(a, b) species-level occ variance (multi-species)
 #' @param tau.sq.alpha.ig list(a, b) species-level det variance (multi-species)
 #'
-#' @return list of class "occu_priors" with INLA-compatible prior specs
+#' @return list of class \code{"occu_priors"} with INLA-compatible prior specs
+#' @export
 occu_priors <- function(beta.normal = list(mean = 0, var = 2.72),
                         alpha.normal = list(mean = 0, var = 2.72),
                         sigma.sq.psi.ig = c(0.1, 0.1),
@@ -356,10 +314,7 @@ occu_priors <- function(beta.normal = list(mean = 0, var = 2.72),
 }
 
 
-#' Convert priors to INLA control.fixed arguments
-#' @param priors occu_priors object
-#' @param process "occ" or "det"
-#' @return list suitable for INLA's control.fixed
+#' @noRd
 priors_to_control_fixed <- function(priors, process = c("occ", "det")) {
   process <- match.arg(process)
   if (is.null(priors)) return(list())
@@ -374,14 +329,7 @@ priors_to_control_fixed <- function(priors, process = c("occ", "det")) {
 }
 
 
-#' K-fold cross-validation for occupancy models
-#'
-#' @param fit_fun fitting function (e.g., occu_inla)
-#' @param data occu_data object
-#' @param k number of folds (default 5)
-#' @param ... additional arguments passed to fit_fun
-#'
-#' @return list with fold-level deviance and overall k-fold deviance
+#' @noRd
 kfold_occu <- function(fit_fun, data, k = 5, ...) {
   N <- data$N
   fold_ids <- sample(rep(1:k, length.out = N))

@@ -2,6 +2,19 @@
 # occu_random.R — Random effects specification for INLA occupancy models
 # =============================================================================
 
+#' @noRd
+validate_re_args <- function(type, covariate, prior, label = "Random") {
+  if (type == "slope" && is.null(covariate)) {
+    stop(sprintf("%s slopes require a 'covariate' argument", label))
+  }
+  if (is.null(prior)) {
+    prior <- list(
+      prec = list(prior = "pc.prec", param = c(1, 0.05))
+    )
+  }
+  prior
+}
+
 #' Specify random effects for occupancy or detection process
 #'
 #' Creates a random effects specification that gets translated to INLA f() terms.
@@ -14,7 +27,8 @@
 #' @param constr logical: sum-to-zero constraint
 #' @param n_groups optional: number of groups (auto-detected if NULL)
 #'
-#' @return object of class "occu_re"
+#' @return object of class \code{"occu_re"}
+#' @export
 occu_re <- function(type = c("intercept", "slope", "iid"),
                     group,
                     covariate = NULL,
@@ -24,20 +38,7 @@ occu_re <- function(type = c("intercept", "slope", "iid"),
                     n_groups = NULL) {
 
   type <- match.arg(type)
-
-  if (type == "slope" && is.null(covariate)) {
-    stop("Random slopes require a 'covariate' argument")
-  }
-
-  if (is.null(prior)) {
-    # Default PC prior for SD: P(sigma > 1) = 0.05
-    prior <- list(
-      prec = list(
-        prior = "pc.prec",
-        param = c(1, 0.05)
-      )
-    )
-  }
+  prior <- validate_re_args(type, covariate, prior)
 
   out <- list(
     type      = type,
@@ -53,11 +54,7 @@ occu_re <- function(type = c("intercept", "slope", "iid"),
 }
 
 
-#' Convert random effect spec to INLA formula term
-#'
-#' @param re occu_re object
-#' @param prefix "occ" or "det" to disambiguate index names
-#' @return character string of the f() term
+#' @noRd
 re_to_inla_term <- function(re, prefix = "occ") {
   idx_name <- paste0(prefix, "_re_", re$group)
 
@@ -87,14 +84,7 @@ re_to_inla_term <- function(re, prefix = "occ") {
 }
 
 
-#' Attach random effect indices and covariates to a data frame
-#'
-#' @param df data.frame to augment
-#' @param re occu_re object
-#' @param group_values vector of group identifiers (length = nrow(df))
-#' @param covariate_values optional: vector of covariate values for random slopes
-#' @param prefix "occ" or "det"
-#' @return augmented data.frame
+#' @noRd
 attach_re_columns <- function(df, re, group_values, covariate_values = NULL,
                               prefix = "occ") {
   idx_name <- paste0(prefix, "_re_", re$group)
@@ -125,25 +115,14 @@ attach_re_columns <- function(df, re, group_values, covariate_values = NULL,
 #' @param model "iid" for exchangeable species effects, "iid" with group for correlated
 #' @param prior prior specification
 #'
-#' @return object of class "occu_community_re"
+#' @return object of class \code{"occu_community_re"}
+#' @export
 occu_community_re <- function(type = c("intercept", "slope"),
                               covariate = NULL,
                               model = "iid",
                               prior = NULL) {
   type <- match.arg(type)
-
-  if (type == "slope" && is.null(covariate)) {
-    stop("Community random slopes require a 'covariate' argument")
-  }
-
-  if (is.null(prior)) {
-    prior <- list(
-      prec = list(
-        prior = "pc.prec",
-        param = c(1, 0.05)
-      )
-    )
-  }
+  prior <- validate_re_args(type, covariate, prior, label = "Community random")
 
   out <- list(
     type      = type,
@@ -156,18 +135,7 @@ occu_community_re <- function(type = c("intercept", "slope"),
 }
 
 
-#' Build random effects formula components and prepare data columns
-#'
-#' Takes a list of occu_re objects and returns the formula string components
-#' needed for the INLA model, plus the augmented data frame.
-#'
-#' @param re_list list of occu_re objects
-#' @param df data.frame to augment with RE columns
-#' @param source_data the original occu_data or data source for extracting group values
-#' @param prefix "occ" or "det"
-#' @param process "occ" or "det" — which process these REs belong to
-#'
-#' @return list with $formula_terms (character vector) and $df (augmented data.frame)
+#' @noRd
 build_re_components <- function(re_list, df, source_data, prefix = "occ",
                                 process = c("occ", "det")) {
   process <- match.arg(process)

@@ -1,0 +1,105 @@
+url: https://gillescolling.com/INLAocc
+template:
+  bootstrap: 5
+  bootswatch: sandstone
+  light-switch: yes
+  math-rendering: mathjax
+
+figures:
+  dev: svg
+  fig.ext: svg
+  bg: '#F5F6F8'
+
+home:
+  title: 'INLAocc: Occupancy Models via INLA'
+  description: |
+    Fast occupancy models using Integrated Nested Laplace Approximations.
+    A Laplace-based alternative to spOccupancy's MCMC.
+
+authors:
+  Gilles Colling:
+    href: https://github.com/gcol33
+
+navbar:
+  structure:
+    left:
+    - intro
+    - reference
+    - articles
+    - news
+    right:
+    - search
+    - lightswitch
+    - github
+
+reference:
+- title: Single-Species Models
+  desc: Non-spatial and spatial occupancy models for one species.
+  contents:
+  - occu_inla
+  - spatial_occu_inla
+  - svcOccu_inla
+
+- title: Multi-Species Models
+  desc: Community occupancy models with species correlations.
+  contents:
+  - ms_occu_inla
+  - lfMsOccu_inla
+  - sfMsOccu_inla
+  - lfJSDM_inla
+
+- title: Temporal & Integrated Models
+  desc: Multi-season and multi-data-source models.
+  contents:
+  - temporal_occu_inla
+  - intOccu_inla
+  - spIntOccu_inla
+
+- title: Data Formatting
+  desc: Prepare detection histories and covariates.
+  contents:
+  - occu_format
+  - occu_format_ms
+
+- title: Model Specification
+  desc: Random effects, priors, and spatial components.
+  contents:
+  - occu_re
+  - occu_community_re
+  - occu_priors
+  - occu_spatial
+
+- title: Prediction & Derived Quantities
+  desc: Predict occupancy at new locations, marginal effects, richness.
+  contents:
+  - predict.occu_inla
+  - predict_spatial
+  - marginal_effect
+  - richness
+
+- title: Diagnostics & Model Comparison
+  desc: Goodness-of-fit, WAIC, residuals, cross-validation.
+  contents:
+  - ppcOccu
+  - waicOccu
+  - compare_models
+  - getSVCSamples
+  - postHocLM
+
+- title: Simulation
+  desc: Generate synthetic occupancy data for testing.
+  contents:
+  - simulate_occu
+  - simMsOcc
+  - simTOcc
+  - simIntOcc
+
+articles:
+- title: Getting Started
+  navbar: ~
+  contents: quickstart
+
+footer:
+  structure:
+    left: developed_by
+    right: built_with
