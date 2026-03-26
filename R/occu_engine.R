@@ -580,7 +580,7 @@ mi_occupancy <- function(occ_prep, data, z_hat, spatial,
       idx <- INLA::inla.stack.index(stack, "occ")$data
       psi_k <- fit$summary.fitted.values$mean[idx]
     } else {
-      fit <- INLA::inla(
+      fit <- suppressWarnings(INLA::inla(
         formula = mi_formula,
         family = "binomial",
         Ntrials = nt,
@@ -589,7 +589,7 @@ mi_occupancy <- function(occ_prep, data, z_hat, spatial,
         control.inla = control.inla %||% INLA::inla.set.control.inla.default(),
         control.compute = ctrl,
         verbose = FALSE
-      )
+      ))
       psi_k <- fit$summary.fitted.values$mean[seq_len(N)]
     }
 
