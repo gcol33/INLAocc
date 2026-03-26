@@ -4,7 +4,7 @@
 \alias{compare_models}
 \title{Compare two occupancy models via WAIC}
 \usage{
-compare_models(...)
+compare_models(..., criterion = c("waic", "aic", "bic"))
 }
 \arguments{
 \item{...}{named occu_inla objects to compare}

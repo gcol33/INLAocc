@@ -862,6 +862,11 @@ logLik.occu_inla <- function(object, ...) {
     if (!is.null(last$loglik)) ll <- last$loglik
   }
 
+  # Compute on demand if not cached (e.g. verbose = 0)
+  if (is.na(ll) && !is.null(object$psi_hat) && !is.null(object$p_hat)) {
+    ll <- occu_loglik(object$data$y, object$psi_hat, object$p_hat)
+  }
+
   n_occ <- nrow(object$occ_fit$summary.fixed)
   n_det <- nrow(object$det_fit$summary.fixed)
   df <- n_occ + n_det
@@ -915,43 +920,184 @@ glance.occu_inla <- function(x, ...) {
 #' @param ... named occu_inla objects to compare
 #' @return data.frame with model comparison metrics
 #' @export
-compare_models <- function(...) {
+compare_models <- function(..., criterion = c("waic", "aic", "bic")) {
+  criterion <- match.arg(criterion)
+  models <- list(...)
+  if (is.null(names(models))) {
+    names(models) <- paste0("model_", seq_along(models))
+  }
+  n_models <- length(models)
+
+  comp <- data.frame(
+    model     = names(models),
+    loglik    = NA_real_,
+    df        = NA_integer_,
+    AIC       = NA_real_,
+    BIC       = NA_real_,
+    WAIC      = NA_real_,
+    n_iter    = NA_integer_,
+    converged = NA
+  )
+
+  for (i in seq_len(n_models)) {
+    m <- models[[i]]
+    if (!inherits(m, "occu_em")) next
+
+    ll <- logLik(m)
+    comp$loglik[i] <- as.numeric(ll)
+    comp$df[i]     <- attr(ll, "df")
+    n_obs          <- attr(ll, "nobs")
+    comp$AIC[i]    <- -2 * as.numeric(ll) + 2 * comp$df[i]
+    comp$BIC[i]    <- -2 * as.numeric(ll) + log(n_obs) * comp$df[i]
+
+    occ_w <- if (!is.null(m$occ_fit$waic)) m$occ_fit$waic$waic else NA_real_
+    det_w <- if (!is.null(m$det_fit$waic)) m$det_fit$waic$waic else NA_real_
+    comp$WAIC[i] <- sum(occ_w, det_w, na.rm = TRUE)
+    if (is.na(occ_w) && is.na(det_w)) comp$WAIC[i] <- NA_real_
+
+    comp$n_iter[i]    <- m$n_iter
+    comp$converged[i] <- m$converged
+  }
+
+  # Choose IC for ranking and weights
+  ic_col <- switch(criterion, waic = "WAIC", aic = "AIC", bic = "BIC")
+  ic_vals <- comp[[ic_col]]
+
+  comp$delta <- ic_vals - min(ic_vals, na.rm = TRUE)
+  comp$weight <- exp(-0.5 * comp$delta) / sum(exp(-0.5 * comp$delta),
+                                                na.rm = TRUE)
+
+  comp <- comp[order(comp$delta), ]
+  rownames(comp) <- NULL
+  attr(comp, "criterion") <- criterion
+  comp
+}
+
+
+# ---------------------------------------------------------------------------
+#  modelAverage  —  multi-model inference
+# ---------------------------------------------------------------------------
+
+#' Model-averaged predictions from multiple occupancy models
+#'
+#' Computes weighted-average occupancy and detection probabilities across
+#' a candidate set of models.  Weights are derived from AIC, BIC, or WAIC
+#' via \code{\link{compare_models}}.
+#'
+#' Follows the "full model averaging" approach of Burnham & Anderson (2002):
+#' predictions from every model contribute, weighted by information-criterion
+#' weights.
+#'
+#' @param ... named \code{occu_inla} objects (the candidate model set)
+#' @param criterion \code{"waic"} (default), \code{"aic"}, or \code{"bic"}
+#' @param newdata optional list for out-of-sample prediction (passed to
+#'   \code{\link{predict.occu_inla}}).  If \code{NULL}, returns in-sample
+#'   averaged psi and p.
+#' @param se if \code{TRUE} (default), returns unconditional standard errors
+#'   that account for model selection uncertainty
+#'
+#' @return A list of class \code{"occu_model_avg"} with:
+#'   \describe{
+#'     \item{psi_hat}{model-averaged occupancy probabilities}
+#'     \item{p_hat}{model-averaged detection probabilities (N x J)}
+#'     \item{psi_se}{unconditional SE for psi (if \code{se = TRUE})}
+#'     \item{weights}{named vector of model weights}
+#'     \item{comparison}{data.frame from \code{compare_models()}}
+#'     \item{criterion}{IC used for weights}
+#'   }
+#' @export
+modelAverage <- function(..., criterion = c("waic", "aic", "bic"),
+                          newdata = NULL, se = TRUE) {
+  criterion <- match.arg(criterion)
   models <- list(...)
   if (is.null(names(models))) {
     names(models) <- paste0("model_", seq_along(models))
   }
 
-  comp <- data.frame(
-    model      = names(models),
-    occ_waic   = NA_real_,
-    det_waic   = NA_real_,
-    total_waic = NA_real_,
-    loglik     = NA_real_,
-    n_iter     = NA_integer_,
-    converged  = NA
-  )
+  comp <- do.call(compare_models, c(models, list(criterion = criterion)))
+  w <- setNames(comp$weight, comp$model)
+  # Reorder weights to match input model order
+  w <- w[names(models)]
 
-  for (i in seq_along(models)) {
-    m <- models[[i]]
-    if (inherits(m, "occu_em")) {
-      if (!is.null(m$occ_fit$waic)) {
-        comp$occ_waic[i] <- m$occ_fit$waic$waic
-      }
-      if (!is.null(m$det_fit$waic)) {
-        comp$det_waic[i] <- m$det_fit$waic$waic
-      }
-      comp$total_waic[i] <- sum(comp$occ_waic[i], comp$det_waic[i],
-                                 na.rm = TRUE)
-      comp$loglik[i]   <- tail(m$history, 1)[[1]]$loglik
-      comp$n_iter[i]   <- m$n_iter
-      comp$converged[i] <- m$converged
+  N <- models[[1]]$data$N
+
+  # --- Weighted average of psi and p ---
+  psi_avg <- rep(0, N)
+  psi_var <- rep(0, N)   # for unconditional SE
+
+  # Detection dimensions can vary across models but J is fixed
+  J <- models[[1]]$data$J
+  p_avg <- matrix(0, N, J)
+
+  for (nm in names(models)) {
+    m <- models[[nm]]
+    wi <- w[nm]
+    if (is.na(wi) || wi == 0) next
+
+    psi_i <- m$psi_hat
+    psi_avg <- psi_avg + wi * psi_i
+
+    p_i <- m$p_hat
+    if (!is.null(p_i) && identical(dim(p_i), c(N, J))) {
+      p_avg <- p_avg + wi * p_i
     }
   }
 
-  # Delta WAIC
-  comp$delta_waic <- comp$total_waic - min(comp$total_waic, na.rm = TRUE)
-  comp <- comp[order(comp$delta_waic), ]
-  rownames(comp) <- NULL
+  # Unconditional SE (Burnham & Anderson eq. 4.9):
+  # var_uncond = sum w_i * (var_i + (theta_i - theta_bar)^2)
+  psi_se <- NULL
+  if (se) {
+    for (nm in names(models)) {
+      m <- models[[nm]]
+      wi <- w[nm]
+      if (is.na(wi) || wi == 0) next
 
-  comp
+      psi_i <- m$psi_hat
+      # Approximate within-model variance from Bernoulli: psi*(1-psi)/nobs
+      # Better: use posterior SD if available from INLA
+      if (!is.null(m$occ_fit$summary.fitted.values)) {
+        sd_i <- m$occ_fit$summary.fitted.values$sd[seq_len(N)]
+        if (length(sd_i) == N) {
+          var_i <- sd_i^2
+        } else {
+          var_i <- psi_i * (1 - psi_i)  # fallback
+        }
+      } else {
+        var_i <- psi_i * (1 - psi_i)
+      }
+      psi_var <- psi_var + wi * (var_i + (psi_i - psi_avg)^2)
+    }
+    psi_se <- sqrt(psi_var)
+  }
+
+  out <- list(
+    psi_hat    = psi_avg,
+    p_hat      = p_avg,
+    psi_se     = psi_se,
+    weights    = w,
+    comparison = comp,
+    criterion  = criterion
+  )
+  class(out) <- "occu_model_avg"
+  out
+}
+
+
+#' @export
+print.occu_model_avg <- function(x, ...) {
+  cat("Model-averaged occupancy predictions\n")
+  cat(sprintf("  Criterion: %s | Models: %d\n", toupper(x$criterion),
+              length(x$weights)))
+  cat(sprintf("  psi range: [%.3f, %.3f] mean=%.3f\n",
+              min(x$psi_hat), max(x$psi_hat), mean(x$psi_hat)))
+  if (!is.null(x$psi_se)) {
+    cat(sprintf("  Unconditional SE range: [%.3f, %.3f]\n",
+                min(x$psi_se), max(x$psi_se)))
+  }
+  cat("\nModel weights:\n")
+  w <- sort(x$weights, decreasing = TRUE)
+  for (nm in names(w)) {
+    cat(sprintf("  %-20s %.3f\n", nm, w[nm]))
+  }
+  invisible(x)
 }

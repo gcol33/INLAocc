@@ -1219,3 +1219,102 @@ testZeroInflation <- function(object, nsim = 250L, seed = 123L) {
     class = "htest"
   )
 }
+
+
+# =============================================================================
+# checkModel  —  diagnostic panel plot
+# =============================================================================
+
+#' Visual diagnostic panel for a fitted occupancy model
+#'
+#' Produces a 2x2 (or 2x3) panel of diagnostic plots:
+#' \enumerate{
+#'   \item QQ plot of PIT residuals vs Uniform(0, 1)
+#'   \item Residuals vs fitted values
+#'   \item Dispersion histogram (observed variance vs simulated)
+#'   \item Moran's I correlogram (if coordinates are available)
+#' }
+#'
+#' Analogous to \code{performance::check_model()} or
+#' \code{DHARMa::plot.DHARMa()}.
+#'
+#' @param object fitted \code{occu_inla} object
+#' @param nsim number of simulations for PIT and dispersion (default 250)
+#' @param seed random seed (default 123)
+#'
+#' @return Invisible list of test results.
+#' @export
+checkModel <- function(object, nsim = 250L, seed = 123L) {
+  sims <- simulate(object, nsim = nsim, seed = seed, level = "site")
+  obs  <- rowSums(object$data$y, na.rm = TRUE)
+  pit  <- pitResiduals(object, nsim = nsim, seed = seed)
+
+  has_coords <- !is.null(object$data$coords)
+  n_panels <- if (has_coords) 4L else 3L
+  layout_mat <- if (has_coords) matrix(1:4, 2, 2) else matrix(1:3, 1, 3)
+
+  old_par <- par(mfrow = if (has_coords) c(2, 2) else c(1, 3),
+                 mar = c(4, 4, 2.5, 1))
+  on.exit(par(old_par))
+
+  # --- Panel 1: QQ Uniform ---
+  n <- length(pit)
+  expected <- (seq_len(n) - 0.5) / n
+  ks_p <- suppressWarnings(ks.test(pit, "punif"))$p.value
+  plot(sort(pit), expected,
+       xlab = "PIT residuals", ylab = "Expected Uniform",
+       main = sprintf("QQ Uniform (KS p = %.3f)", ks_p),
+       pch = 19, cex = 0.5,
+       col = adjustcolor("black", 0.6))
+  abline(0, 1, col = "red", lty = 2, lwd = 1.5)
+
+  # --- Panel 2: Residuals vs fitted ---
+  fv <- rowSums(fitted(object)$y.rep, na.rm = TRUE)
+  r  <- residuals(object, type = "deviance")$occ.resids
+  plot(fv, r,
+       xlab = "Fitted (site detection count)", ylab = "Deviance residuals",
+       main = "Residuals vs Fitted",
+       pch = 19, cex = 0.5,
+       col = adjustcolor("black", 0.6))
+  abline(h = 0, col = "red", lty = 2, lwd = 1.5)
+  lo <- tryCatch(lowess(fv, r), error = function(e) NULL)
+  if (!is.null(lo)) lines(lo, col = "blue", lwd = 1.5)
+
+  # --- Panel 3: Dispersion ---
+  var_sim <- apply(sims, 2, var)
+  var_obs <- var(obs)
+  ratio <- var_obs / median(var_sim)
+  hist(var_sim, breaks = 20,
+       main = sprintf("Dispersion (ratio = %.2f)", ratio),
+       xlab = "Simulated variance", col = "grey80", border = "grey50")
+  abline(v = var_obs, col = "red", lwd = 2)
+
+  # --- Panel 4: Moran's I correlogram (if spatial) ---
+  moran_result <- NULL
+  if (has_coords) {
+    coords <- object$data$coords
+    ks <- c(3, 5, 8, 12, 20)
+    ks <- ks[ks < nrow(coords)]
+    I_vals <- numeric(length(ks))
+    p_vals <- numeric(length(ks))
+    for (j in seq_along(ks)) {
+      mi <- moranI(r, coords = coords, weights = "knn", k = ks[j])
+      I_vals[j] <- mi$statistic
+      p_vals[j] <- mi$p.value
+    }
+    sig <- p_vals < 0.05
+    plot(ks, I_vals, type = "b",
+         xlab = "k neighbours", ylab = "Moran's I",
+         main = "Spatial Correlogram",
+         pch = ifelse(sig, 19, 1),
+         col = ifelse(sig, "red", "black"))
+    abline(h = -1 / (nrow(coords) - 1), col = "grey50", lty = 2)
+    moran_result <- data.frame(k = ks, I = I_vals, p = p_vals)
+  }
+
+  invisible(list(
+    ks_p     = ks_p,
+    disp_ratio = ratio,
+    moran    = moran_result
+  ))
+}
