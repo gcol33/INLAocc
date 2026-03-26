@@ -237,6 +237,43 @@ nobars_ast <- function(term) {
   call(deparse(term[[1]]), nb_left, nb_right)
 }
 
+#' Expand *, ^, and other shorthand operators in random effect LHS expressions
+#'
+#' Uses R's own \code{terms()} machinery to expand operator shorthand such as
+#' \code{a * b} (main effects + interaction) and \code{(a + b)^2} (all pairs)
+#' into explicit additive terms. Plain symbols and \code{:} interactions pass
+#' through unchanged.
+#' @param expr A language object representing the LHS of a bar term.
+#' @return A language object with \code{*} and \code{^} expanded into \code{+}
+#'   and \code{:} chains.
+#' @noRd
+expand_re_terms <- function(expr) {
+  f <- as.formula(paste("~", deparse(expr)))
+  tt <- terms(f)
+  term_labels <- attr(tt, "term.labels")
+  has_icpt <- attr(tt, "intercept") == 1
+
+  if (length(term_labels) == 0) return(expr)
+
+  # Parse each term label back to an expression (handles a:b correctly)
+  parse_term <- function(lab) {
+    parse(text = lab)[[1]]
+  }
+
+  result <- parse_term(term_labels[1])
+  if (length(term_labels) > 1) {
+    for (i in 2:length(term_labels)) {
+      result <- call("+", result, parse_term(term_labels[i]))
+    }
+  }
+
+  if (!has_icpt) {
+    result <- call("+", 0, result)
+  }
+
+  result
+}
+
 #' Flatten a + chain into individual terms
 #' @noRd
 collect_additive_terms <- function(expr) {
@@ -267,6 +304,9 @@ bar_to_occu_re <- function(bar_term) {
   } else {
     group_var <- if (is.name(rhs)) as.character(rhs) else deparse(rhs)
   }
+
+  # Expand *, ^ shorthand before decomposing into additive terms
+  lhs <- expand_re_terms(lhs)
 
   # Decompose LHS into intercept flag + slope terms
   terms <- collect_additive_terms(lhs)

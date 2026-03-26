@@ -194,3 +194,40 @@ test_that("mixed | and || in same formula are parsed independently", {
   expect_equal(re[[3]]$covariate, "x")
   expect_false(re[[3]]$correlated)
 })
+
+# ==========================================================================
+# Star and caret expansion in bar terms
+# ==========================================================================
+
+test_that("(a*b | group) expands to intercept + 3 slopes (a, b, a:b)", {
+  re <- parse_re(~ (a * b | group))
+  expect_length(re, 4)
+  expect_equal(re[[1]]$type, "intercept")
+  expect_equal(re[[1]]$group, "group")
+  expect_equal(re[[2]]$type, "slope")
+  expect_equal(re[[2]]$covariate, "a")
+  expect_equal(re[[3]]$type, "slope")
+  expect_equal(re[[3]]$covariate, "b")
+  expect_equal(re[[4]]$type, "slope")
+  expect_equal(re[[4]]$covariate, "a:b")
+})
+
+test_that("(0 + a*b | group) expands to 3 slopes, no intercept", {
+  re <- parse_re(~ (0 + a * b | group))
+  expect_length(re, 3)
+  expect_equal(re[[1]]$type, "slope")
+  expect_equal(re[[1]]$covariate, "a")
+  expect_equal(re[[2]]$type, "slope")
+  expect_equal(re[[2]]$covariate, "b")
+  expect_equal(re[[3]]$type, "slope")
+  expect_equal(re[[3]]$covariate, "a:b")
+})
+
+test_that("(a:b | group) gives intercept + 1 slope for interaction", {
+  re <- parse_re(~ (a:b | group))
+  expect_length(re, 2)
+  expect_equal(re[[1]]$type, "intercept")
+  expect_equal(re[[1]]$group, "group")
+  expect_equal(re[[2]]$type, "slope")
+  expect_equal(re[[2]]$covariate, "a:b")
+})
