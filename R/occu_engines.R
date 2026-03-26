@@ -283,14 +283,10 @@ fit_joint_occupancy <- function(data_list, weights_all, occ_formula,
     verbose         = verbose
   )
 
-  # Extract psi per site-period
+  # Extract psi per site-period (direct indexing, no which())
   psi_fitted <- fit$summary.fitted.values$mean
   psi_mat <- matrix(NA, N, n_periods)
-  for (t in seq_len(n_periods)) {
-    idx <- which(stacked$period == t)
-    site_ids <- stacked$site[idx]
-    psi_mat[site_ids, t] <- psi_fitted[idx]
-  }
+  psi_mat[cbind(stacked$site, stacked$period)] <- psi_fitted
 
   if (return_fit) {
     return(list(fit = fit, psi_mat = psi_mat))
@@ -823,19 +819,13 @@ engine_ms_temporal <- function(args) {
     tau2_comm  <- apply(beta_mat, 2, var)  # between-species variance
 
     # EB shrinkage: beta_s* = mu + (tau2 / (tau2 + sigma_s^2)) * (beta_s - mu)
-    beta_shrunk <- beta_mat
-    for (k in seq_len(n_coef)) {
-      for (s in seq_len(nrow(beta_mat))) {
-        sigma2_s <- se_mat[s, k]^2
-        shrink_factor <- tau2_comm[k] / (tau2_comm[k] + sigma2_s)
-        # Handle edge case: tau2 = 0 means all species identical
-        if (is.na(shrink_factor) || tau2_comm[k] < 1e-10) {
-          shrink_factor <- 0
-        }
-        beta_shrunk[s, k] <- mu_comm[k] +
-          shrink_factor * (beta_mat[s, k] - mu_comm[k])
-      }
-    }
+    # Vectorized: broadcast tau2_comm across species rows
+    sigma2_mat <- se_mat^2
+    tau2_row <- matrix(tau2_comm, nrow = nrow(beta_mat), ncol = n_coef, byrow = TRUE)
+    shrink_mat <- tau2_row / (tau2_row + sigma2_mat)
+    shrink_mat[is.na(shrink_mat) | tau2_row < 1e-10] <- 0
+    mu_row <- matrix(mu_comm, nrow = nrow(beta_mat), ncol = n_coef, byrow = TRUE)
+    beta_shrunk <- mu_row + shrink_mat * (beta_mat - mu_row)
 
     community <- data.frame(
       parameter      = coef_names,
@@ -857,9 +847,15 @@ engine_ms_temporal <- function(args) {
     }
 
     # --- Stage 3: Apply shrinkage to psi estimates ---
-    # For each species, adjust psi using the shrunk betas
-    # psi_shrunk = logistic(X %*% beta_shrunk + temporal_effect)
-    # Approximation: shift logit(psi) by the beta difference
+    # Build design matrix once (invariant across species)
+    occ_covs <- if (!is.null(data$occ.covs)) {
+      oc <- lapply(data$occ.covs, function(x) {
+        if (is.matrix(x) && ncol(x) == n_periods) x[, 1] else x
+      })
+      as.data.frame(oc)
+    } else data.frame(.intercept = rep(1, N))
+    X <- model.matrix(args$occ_parsed$fixed, data = occ_covs)
+
     for (s in seq_len(n_sp)) {
       sp <- sp_names[s]
       fit <- species_fits[[sp]]
@@ -867,24 +863,13 @@ engine_ms_temporal <- function(args) {
 
       if (sp %in% rownames(beta_shrunk)) {
         beta_diff <- beta_shrunk[sp, ] - beta_mat[sp, ]
-
-        # Build design matrix for this species
-        occ_covs <- if (!is.null(data$occ.covs)) {
-          oc <- lapply(data$occ.covs, function(x) {
-            if (is.matrix(x) && ncol(x) == n_periods) x[, 1] else x
-          })
-          as.data.frame(oc)
-        } else data.frame(.intercept = rep(1, N))
-        X <- model.matrix(args$occ_parsed$fixed, data = occ_covs)
-
-        # Shift logit(psi) by X %*% beta_diff
         logit_shift <- as.vector(X %*% beta_diff)
 
+        # Vectorized across periods: apply shift to psi_mat columns
+        psi_mat_old <- clamp(fit$psi_mat)
+        fit$psi_mat <- expit(logit(psi_mat_old) + logit_shift)
         for (t in seq_len(n_periods)) {
-          psi_old <- clamp(fit$period_fits[[t]]$psi_hat)
-          logit_psi <- logit(psi_old) + logit_shift
-          fit$period_fits[[t]]$psi_hat <- expit(logit_psi)
-          fit$psi_mat[, t] <- expit(logit_psi)
+          fit$period_fits[[t]]$psi_hat <- fit$psi_mat[, t]
         }
       }
       species_fits[[sp]] <- fit

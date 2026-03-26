@@ -76,30 +76,14 @@ residuals.occu_inla <- function(object, type = c("deviance", "pearson", "respons
     occ_var <- psi * (1 - psi)
     occ_resid <- (as.integer(object$data$detected) - psi) / sqrt(clamp(occ_var, lo = 1e-6))
   } else {
-    # Deviance residuals
-    det_resid <- matrix(NA, N, J)
-    for (i in seq_len(N)) {
-      for (j in seq_len(J)) {
-        if (is.na(y[i, j])) next
-        mu <- clamp(y_exp[i, j])
-        if (y[i, j] == 1) {
-          det_resid[i, j] <- sqrt(-2 * log(mu))
-        } else {
-          det_resid[i, j] <- -sqrt(-2 * log(1 - mu))
-        }
-      }
-    }
+    # Deviance residuals (vectorized)
+    mu <- clamp(y_exp)
+    det_resid <- ifelse(y == 1, sqrt(-2 * log(mu)), -sqrt(-2 * log(1 - mu)))
+    det_resid[is.na(y)] <- NA
 
-    occ_resid <- numeric(N)
-    for (i in seq_len(N)) {
-      d <- as.integer(object$data$detected[i])
-      mu <- clamp(psi[i])
-      if (d == 1) {
-        occ_resid[i] <- sqrt(-2 * log(mu))
-      } else {
-        occ_resid[i] <- -sqrt(-2 * log(1 - mu))
-      }
-    }
+    d <- as.integer(object$data$detected)
+    mu_occ <- clamp(psi)
+    occ_resid <- ifelse(d == 1, sqrt(-2 * log(mu_occ)), -sqrt(-2 * log(1 - mu_occ)))
   }
 
   list(
@@ -164,12 +148,9 @@ residuals.occu_inla_int <- function(object,
     occ_var <- psi * (1 - psi)
     occ_resid <- (as.integer(detected_any) - psi) / sqrt(clamp(occ_var, lo = 1e-6))
   } else {
-    occ_resid <- numeric(N_total)
-    for (i in seq_len(N_total)) {
-      d_i <- as.integer(detected_any[i])
-      mu <- clamp(psi[i])
-      occ_resid[i] <- if (d_i == 1) sqrt(-2 * log(mu)) else -sqrt(-2 * log(1 - mu))
-    }
+    d_vec <- as.integer(detected_any)
+    mu_occ <- clamp(psi)
+    occ_resid <- ifelse(d_vec == 1, sqrt(-2 * log(mu_occ)), -sqrt(-2 * log(1 - mu_occ)))
   }
 
   # Per-source detection residuals
@@ -187,16 +168,9 @@ residuals.occu_inla_int <- function(object,
       det_var <- y_exp * (1 - p_d)
       det_resids[[d]] <- (y_d - y_exp) / sqrt(clamp(det_var, lo = 1e-6))
     } else {
-      N_d <- nrow(y_d)
-      J_d <- ncol(y_d)
-      dr <- matrix(NA, N_d, J_d)
-      for (i in seq_len(N_d)) {
-        for (j in seq_len(J_d)) {
-          if (is.na(y_d[i, j])) next
-          mu <- clamp(y_exp[i, j])
-          dr[i, j] <- if (y_d[i, j] == 1) sqrt(-2 * log(mu)) else -sqrt(-2 * log(1 - mu))
-        }
-      }
+      mu_d <- clamp(y_exp)
+      dr <- ifelse(y_d == 1, sqrt(-2 * log(mu_d)), -sqrt(-2 * log(1 - mu_d)))
+      dr[is.na(y_d)] <- NA
       det_resids[[d]] <- dr
     }
   }
@@ -354,32 +328,32 @@ ppcOccu <- function(object, fit.stat = c("freeman-tukey", "chi-squared"),
   fit_y     <- numeric(n.samples)
   fit_y_rep <- numeric(n.samples)
 
+  # Pre-compute NA mask and observed aggregates (invariant across samples)
+  not_na <- !is.na(y)
+  n_obs <- sum(not_na)
+  psi_clamped <- clamp(object$psi_hat)
+  if (group == 1) {
+    obs_stat <- rowSums(y, na.rm = TRUE)
+    exp_stat <- rowSums(E_y, na.rm = TRUE)
+  } else {
+    obs_stat <- colSums(y, na.rm = TRUE)
+    exp_stat <- colSums(E_y, na.rm = TRUE)
+  }
+
   for (s in seq_len(n.samples)) {
-    # Generate replicated data
-    z_rep <- rbinom(N, 1, clamp(object$psi_hat))
-    y_rep <- matrix(NA, N, J)
-    for (i in seq_len(N)) {
-      for (j in seq_len(J)) {
-        if (!is.na(y[i, j])) {
-          y_rep[i, j] <- rbinom(1, 1, z_rep[i] * p_hat[i, j])
-        }
-      }
-    }
+    # Generate replicated data (vectorized)
+    z_rep <- rbinom(N, 1, psi_clamped)
+    prob_rep <- z_rep * p_hat
+    y_rep <- matrix(NA_integer_, N, J)
+    y_rep[not_na] <- rbinom(n_obs, 1, prob_rep[not_na])
 
     E_y_rep <- z_rep * p_hat
-    E_y_rep[is.na(y)] <- NA
+    E_y_rep[!not_na] <- NA
 
-    # Compute fit statistic
     if (group == 1) {
-      # Aggregate by site
-      obs_stat   <- rowSums(y, na.rm = TRUE)
-      exp_stat   <- rowSums(E_y, na.rm = TRUE)
       rep_stat   <- rowSums(y_rep, na.rm = TRUE)
       exp_r_stat <- rowSums(E_y_rep, na.rm = TRUE)
     } else {
-      # Aggregate by visit
-      obs_stat   <- colSums(y, na.rm = TRUE)
-      exp_stat   <- colSums(E_y, na.rm = TRUE)
       rep_stat   <- colSums(y_rep, na.rm = TRUE)
       exp_r_stat <- colSums(E_y_rep, na.rm = TRUE)
     }
@@ -451,25 +425,26 @@ waicOccu <- function(object, by.sp = FALSE) {
   if (inherits(object, "occu_inla_int")) {
     # Integrated model: per-source WAIC for detection
     occ_waic <- object$occ_fit$waic
-    results <- data.frame(
+    parts <- list(data.frame(
       component = "occupancy",
       elpd      = sum(occ_waic$local.waic / -2, na.rm = TRUE),
       pD        = occ_waic$p.eff %||% NA,
       WAIC      = occ_waic$waic %||% NA
-    )
+    ))
 
     for (d in seq_along(object$det_fits)) {
       det_waic <- object$det_fits[[d]]$waic
       if (!is.null(det_waic)) {
-        results <- rbind(results, data.frame(
+        parts[[length(parts) + 1L]] <- data.frame(
           component = paste0("detection_", d),
           elpd      = sum(det_waic$local.waic / -2, na.rm = TRUE),
           pD        = det_waic$p.eff %||% NA,
           WAIC      = det_waic$waic %||% NA
-        ))
+        )
       }
     }
 
+    results <- do.call(rbind, parts)
     # Total
     results <- rbind(results, data.frame(
       component = "total",
@@ -609,36 +584,34 @@ postHocLM <- function(formula, data, weights = NULL,
         fix_names <- rownames(inla_fit$summary.fixed)
         n_coef <- length(fix_names)
 
+        # Build name→index map once from first sample
+        latent_names <- rownames(samples[[1]]$latent)
+        fix_idx <- vapply(fix_names, function(nm) {
+          idx <- grep(paste0("^", nm, ":"), latent_names)
+          if (length(idx) > 0) idx[1] else NA_integer_
+        }, integer(1))
+
         beta_samples <- matrix(NA_real_, n.samples, n_coef)
         colnames(beta_samples) <- fix_names
         tau_sq_samples <- numeric(n.samples)
 
-        X <- model.matrix(formula, data = data)
-        y_hat_samples <- matrix(NA_real_, n.samples, nrow(data))
-
         for (s in seq_len(n.samples)) {
           latent <- samples[[s]]$latent
-          latent_names <- rownames(latent)
-          for (k in seq_along(fix_names)) {
-            idx <- grep(paste0("^", fix_names[k], ":"), latent_names)
-            if (length(idx) > 0) beta_samples[s, k] <- latent[idx[1]]
-          }
-          # Residual precision → variance
+          valid <- !is.na(fix_idx)
+          beta_samples[s, valid] <- latent[fix_idx[valid]]
           hyp <- samples[[s]]$hyperpar
           if (length(hyp) > 0) {
             tau_sq_samples[s] <- 1 / max(hyp[1], 1e-8)
           }
-          y_hat_samples[s, ] <- as.vector(X %*% beta_samples[s, ])
         }
 
-        # Bayesian R-squared: var(y_hat) / (var(y_hat) + sigma^2)
-        resp_name <- as.character(formula)[2]
-        y_obs <- data[[resp_name]]
-        bayes_r2 <- numeric(n.samples)
-        for (s in seq_len(n.samples)) {
-          var_fit <- var(y_hat_samples[s, ])
-          bayes_r2[s] <- var_fit / (var_fit + tau_sq_samples[s])
-        }
+        # Vectorized fitted values: (n.samples x n_coef) %*% t(X) → n.samples x n
+        X <- model.matrix(formula, data = data)
+        y_hat_samples <- beta_samples %*% t(X)
+
+        # Bayesian R-squared (vectorized)
+        var_fit <- apply(y_hat_samples, 1, var)
+        bayes_r2 <- var_fit / (var_fit + tau_sq_samples)
 
         out <- list(
           beta.samples   = beta_samples,

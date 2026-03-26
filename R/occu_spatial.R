@@ -139,12 +139,13 @@ occu_areal <- function(adj,
       stop("Adjacency matrix must be symmetric")
     N <- nrow(adj)
     graph_file <- tempfile(fileext = ".graph")
-    # Write INLA graph format
+    # Write INLA graph format (vectorized neighbor extraction)
     lines <- character(N + 1)
     lines[1] <- as.character(N)
-    for (i in seq_len(N)) {
-      neighbors <- which(adj[i, ] > 0 & seq_len(N) != i)
-      lines[i + 1] <- paste(c(i, length(neighbors), neighbors), collapse = " ")
+    seq_N <- seq_len(N)
+    for (i in seq_N) {
+      neighbors <- seq_N[adj[i, ] > 0 & seq_N != i]
+      lines[i + 1] <- paste(i, length(neighbors), paste(neighbors, collapse = " "))
     }
     writeLines(lines, graph_file)
     graph <- graph_file
@@ -157,7 +158,7 @@ occu_areal <- function(adj,
     for (i in seq_len(N)) {
       nb_i <- adj[[i]]
       nb_i <- nb_i[nb_i > 0]  # remove 0 (no-neighbor indicator)
-      lines[i + 1] <- paste(c(i, length(nb_i), nb_i), collapse = " ")
+      lines[i + 1] <- paste(i, length(nb_i), paste(nb_i, collapse = " "))
     }
     writeLines(lines, graph_file)
     graph <- graph_file

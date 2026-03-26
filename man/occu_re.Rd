@@ -11,6 +11,7 @@ occu_re(
   model = "iid",
   prior = NULL,
   constr = FALSE,
+  correlated = TRUE,
   n_groups = NULL
 )
 }
@@ -26,6 +27,10 @@ occu_re(
 \item{prior}{list with prior specification (passed to INLA hyper)}
 
 \item{constr}{logical: sum-to-zero constraint}
+
+\item{correlated}{logical: whether this RE is correlated with other REs sharing
+the same grouping factor. Set to \code{FALSE} when parsed from lme4 \code{||}
+(double-bar) syntax, indicating uncorrelated random effects.}
 
 \item{n_groups}{optional: number of groups (auto-detected if NULL)}
 }

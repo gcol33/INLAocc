@@ -603,6 +603,10 @@ mi_occupancy <- function(occ_prep, data, z_hat, spatial,
   prev_V_between <- NULL
   K_used <- K
 
+  # Running accumulators for incremental variance (Welford's algorithm)
+  beta_sum <- NULL
+  beta_sum_sq <- NULL
+
   for (k in seq_len(K)) {
     res <- run_one_mi(seeds[k])
     beta_samples[[k]] <- res$beta
@@ -610,12 +614,19 @@ mi_occupancy <- function(occ_prep, data, z_hat, spatial,
 
     # Adaptive stopping after K_min imputations
     if (k >= K_min) {
-      beta_means_so_far <- sapply(beta_samples[seq_len(k)], function(b) b$mean)
-      if (is.matrix(beta_means_so_far)) {
-        V_between <- apply(beta_means_so_far, 1, var)
+      # Incremental mean/variance via running sums (O(K) total, not O(K²))
+      bm <- res$beta$mean
+      if (is.null(beta_sum)) {
+        # First time reaching K_min: initialize from all samples so far
+        all_means <- sapply(beta_samples[seq_len(k)], function(b) b$mean)
+        if (!is.matrix(all_means)) all_means <- matrix(all_means, nrow = 1)
+        beta_sum <- rowSums(all_means)
+        beta_sum_sq <- rowSums(all_means^2)
       } else {
-        V_between <- var(beta_means_so_far)
+        beta_sum <- beta_sum + bm
+        beta_sum_sq <- beta_sum_sq + bm^2
       }
+      V_between <- (beta_sum_sq / k) - (beta_sum / k)^2
 
       if (!is.null(prev_V_between)) {
         denom <- pmax(prev_V_between, 1e-10)
