@@ -613,6 +613,236 @@ plot.occu_inla_jsdm <- function(x, which = 1:2, ...) {
 }
 
 
+# =============================================================================
+# Standard S3 generics: coef, confint, vcov, nobs, update, tidy, ranef
+# =============================================================================
+
+#' Extract model coefficients
+#'
+#' @param object fitted occu_inla object
+#' @param process \code{"occupancy"} (default), \code{"detection"}, or
+#'   \code{"both"}.
+#' @param ... ignored
+#'
+#' @return Named numeric vector of posterior means. If
+#'   \code{process = "both"}, a named list with \code{occ} and \code{det}.
+#' @export
+coef.occu_inla <- function(object, process = c("both", "occupancy", "detection"),
+                           ...) {
+  process <- match.arg(process)
+  occ <- setNames(object$occ_fit$summary.fixed$mean,
+                  rownames(object$occ_fit$summary.fixed))
+  det <- setNames(object$det_fit$summary.fixed$mean,
+                  rownames(object$det_fit$summary.fixed))
+  if (process == "occupancy") return(occ)
+  if (process == "detection") return(det)
+  list(occ = occ, det = det)
+}
+
+
+#' Compute credible intervals
+#'
+#' @param object fitted occu_inla object
+#' @param parm not used (included for S3 compatibility)
+#' @param level credible level (default 0.95)
+#' @param process \code{"occupancy"} (default), \code{"detection"}, or
+#'   \code{"both"}.
+#' @param ... ignored
+#'
+#' @return Matrix with lower and upper columns, or a list of matrices
+#'   if \code{process = "both"}.
+#' @export
+confint.occu_inla <- function(object, parm, level = 0.95,
+                              process = c("both", "occupancy", "detection"),
+                              ...) {
+  process <- match.arg(process)
+  alpha <- (1 - level) / 2
+  q_lo <- paste0(alpha, "quant")
+  q_hi <- paste0(1 - alpha, "quant")
+
+  make_ci <- function(fixed) {
+    lo <- if (q_lo %in% names(fixed)) fixed[[q_lo]] else {
+      fixed$mean + qnorm(alpha) * fixed$sd
+    }
+    hi <- if (q_hi %in% names(fixed)) fixed[[q_hi]] else {
+      fixed$mean + qnorm(1 - alpha) * fixed$sd
+    }
+    ci <- cbind(lo, hi)
+    colnames(ci) <- paste0(c(alpha * 100, (1 - alpha) * 100), "%")
+    rownames(ci) <- rownames(fixed)
+    ci
+  }
+
+  occ_ci <- make_ci(object$occ_fit$summary.fixed)
+  det_ci <- make_ci(object$det_fit$summary.fixed)
+
+  if (process == "occupancy") return(occ_ci)
+  if (process == "detection") return(det_ci)
+  list(occ = occ_ci, det = det_ci)
+}
+
+
+#' Approximate variance-covariance matrix
+#'
+#' Returns the diagonal approximation (independent posteriors) from INLA.
+#' For the full posterior covariance, use
+#' \code{INLA::inla.posterior.sample()}.
+#'
+#' @param object fitted occu_inla object
+#' @param process \code{"occupancy"} (default) or \code{"detection"}.
+#' @param ... ignored
+#'
+#' @return A diagonal variance-covariance matrix.
+#' @export
+vcov.occu_inla <- function(object,
+                           process = c("occupancy", "detection"), ...) {
+  process <- match.arg(process)
+  fixed <- if (process == "occupancy") {
+    object$occ_fit$summary.fixed
+  } else {
+    object$det_fit$summary.fixed
+  }
+  v <- diag(fixed$sd^2, nrow = nrow(fixed))
+  dimnames(v) <- list(rownames(fixed), rownames(fixed))
+  v
+}
+
+
+#' Number of observations
+#'
+#' @param object fitted occu_inla object
+#' @param ... ignored
+#'
+#' @return Integer: number of non-NA detection history entries.
+#' @export
+nobs.occu_inla <- function(object, ...) {
+  sum(!is.na(object$data$y))
+}
+
+
+#' Update and refit an occupancy model
+#'
+#' Modify the formula or arguments of a fitted model and refit.
+#'
+#' @param object fitted occu_inla object
+#' @param occ.formula new occupancy formula (default: keep existing).
+#'   Supports \code{update.formula} syntax: \code{. ~ . - term}.
+#' @param det.formula new detection formula (default: keep existing).
+#' @param data new data (default: keep existing).
+#' @param ... additional arguments passed to \code{\link{occu}}.
+#' @param evaluate if \code{FALSE}, return the call instead of fitting.
+#'
+#' @return A new fitted model.
+#' @export
+update.occu_inla <- function(object, occ.formula = NULL, det.formula = NULL,
+                             data = NULL, ..., evaluate = TRUE) {
+  # Recover original call
+  cl <- object$call
+  if (is.null(cl)) stop("Model does not store its call; cannot update")
+
+  # Update formulas
+
+  if (!is.null(occ.formula)) {
+    cl$occ.formula <- update.formula(object$occ.formula, occ.formula)
+  }
+  if (!is.null(det.formula)) {
+    cl$det.formula <- update.formula(object$det.formula, det.formula)
+  }
+  if (!is.null(data)) {
+    cl$data <- data
+  }
+
+  # Merge extra arguments
+  dots <- list(...)
+  for (nm in names(dots)) cl[[nm]] <- dots[[nm]]
+
+  if (!evaluate) return(cl)
+  eval(cl, parent.frame())
+}
+
+
+#' Tidy model output into a data.frame
+#'
+#' Returns a tidy data.frame of fixed effect estimates, similar to
+#' \code{broom::tidy()}.
+#'
+#' @param x fitted occu_inla object
+#' @param process \code{"occupancy"} (default), \code{"detection"}, or
+#'   \code{"both"}.
+#' @param conf.level credible level for intervals (default 0.95).
+#' @param ... ignored
+#'
+#' @return A data.frame with columns \code{process}, \code{term},
+#'   \code{estimate}, \code{std.error}, \code{conf.low}, \code{conf.high}.
+#' @export
+tidy.occu_inla <- function(x, process = c("both", "occupancy", "detection"),
+                           conf.level = 0.95, ...) {
+  process <- match.arg(process)
+  alpha <- (1 - conf.level) / 2
+
+  make_tidy <- function(fixed, proc_label) {
+    lo <- fixed$mean + qnorm(alpha) * fixed$sd
+    hi <- fixed$mean + qnorm(1 - alpha) * fixed$sd
+    data.frame(
+      process   = proc_label,
+      term      = rownames(fixed),
+      estimate  = fixed$mean,
+      std.error = fixed$sd,
+      conf.low  = lo,
+      conf.high = hi,
+      row.names = NULL
+    )
+  }
+
+  parts <- list()
+  if (process %in% c("both", "occupancy")) {
+    parts <- c(parts, list(make_tidy(x$occ_fit$summary.fixed, "occupancy")))
+  }
+  if (process %in% c("both", "detection")) {
+    parts <- c(parts, list(make_tidy(x$det_fit$summary.fixed, "detection")))
+  }
+  do.call(rbind, parts)
+}
+
+
+#' Extract random effects
+#'
+#' Returns the posterior summaries of random effect levels, similar to
+#' \code{lme4::ranef()}.
+#'
+#' @param object fitted occu_inla object
+#' @param process \code{"occupancy"} (default), \code{"detection"}, or
+#'   \code{"both"}.
+#' @param ... ignored
+#'
+#' @return A named list of data.frames (one per random effect group),
+#'   each with columns \code{mean}, \code{sd}, \code{0.025quant},
+#'   \code{0.975quant}. If \code{process = "both"}, a list with
+#'   \code{occ} and \code{det} sub-lists.
+#' @export
+ranef.occu_inla <- function(object,
+                            process = c("both", "occupancy", "detection"),
+                            ...) {
+  process <- match.arg(process)
+
+  extract_re <- function(fit, prefix) {
+    re <- fit$summary.random
+    if (is.null(re) || length(re) == 0) return(list())
+    # Strip internal prefix from names
+    out <- re
+    names(out) <- sub(paste0("^", prefix, "_re_"), "", names(out))
+    out
+  }
+
+  occ_re <- extract_re(object$occ_fit, "occ")
+  det_re <- extract_re(object$det_fit, "det")
+
+  if (process == "occupancy") return(occ_re)
+  if (process == "detection") return(det_re)
+  list(occ = occ_re, det = det_re)
+}
+
+
 #' Compare two occupancy models via WAIC
 #'
 #' @param ... named occu_inla objects to compare
