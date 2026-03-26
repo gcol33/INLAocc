@@ -1222,6 +1222,284 @@ testZeroInflation <- function(object, nsim = 250L, seed = 123L) {
 
 
 # =============================================================================
+# checkIdentifiability  —  pre/post-fit identifiability diagnostics
+# =============================================================================
+
+#' Diagnose identifiability issues in occupancy models
+#'
+#' Checks for common sources of non-identifiability in occupancy models,
+#' both before fitting (on data) and after fitting (on the model object).
+#' Each issue is flagged with a severity and a plain-language explanation.
+#'
+#' @param object an \code{occu_data} object (pre-fit) or a fitted
+#'   \code{occu_inla} object (post-fit)
+#' @param occ.re optional list of occupancy random effects (for pre-fit
+#'   RE checks; auto-extracted from fitted models)
+#' @param det.re optional list of detection random effects
+#'
+#' @return A list of class \code{"occu_identifiability"} with component
+#'   \code{issues}, a data.frame of flagged issues.
+#' @export
+checkIdentifiability <- function(object, occ.re = NULL, det.re = NULL) {
+  issues <- list()
+  add <- function(severity, what, why, fix) {
+    issues[[length(issues) + 1L]] <<- data.frame(
+      severity = severity, issue = what, reason = why, suggestion = fix,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  # ---------------------------------------------------------------
+  # Pre-fit checks (work on both data and fitted objects)
+  # ---------------------------------------------------------------
+  data <- if (inherits(object, "occu_data")) object else object$data
+  y <- data$y
+  N <- nrow(y)
+  J <- ncol(y)
+
+  # 1. Too few visits
+  n_visits <- rowSums(!is.na(y))
+  if (J <= 2) {
+    add("HIGH", "Few visits (J <= 2)",
+        sprintf("J = %d. With 1-2 visits per site, occupancy and detection are confounded.", J),
+        "Increase survey effort to >= 3 visits per site.")
+  }
+  few_visit_sites <- sum(n_visits < 3)
+  if (few_visit_sites > 0 && J > 2) {
+    add("MEDIUM", "Sites with < 3 visits",
+        sprintf("%d of %d sites have fewer than 3 non-NA visits.", few_visit_sites, N),
+        "These sites contribute little to detection estimation.")
+  }
+
+  # 2. Low naive detection
+  detected <- rowSums(y == 1, na.rm = TRUE) > 0
+  naive_psi <- mean(detected)
+  det_visits <- sum(y == 1, na.rm = TRUE)
+  total_visits <- sum(!is.na(y))
+  naive_p <- det_visits / total_visits
+  if (naive_p < 0.1) {
+    add("HIGH", "Very low naive detection rate",
+        sprintf("Naive p = %.3f. Below 10%%, the model struggles to separate absence from non-detection.", naive_p),
+        "Consider pooling visits, using a simpler detection model, or increasing survey effort.")
+  } else if (naive_p < 0.2) {
+    add("LOW", "Low naive detection rate",
+        sprintf("Naive p = %.3f.", naive_p),
+        "Detection is low. Keep the detection model simple (few covariates).")
+  }
+
+  # 3. Sparse detection histories
+  histories <- apply(y, 1, function(row) paste(ifelse(is.na(row), ".", row), collapse = ""))
+  n_unique <- length(unique(histories))
+  if (n_unique < min(N / 2, 10)) {
+    add("MEDIUM", "Low detection history diversity",
+        sprintf("Only %d unique detection histories across %d sites.", n_unique, N),
+        "Many sites have identical patterns. The model may not have enough variation to estimate parameters.")
+  }
+
+  # 4. All-detected or all-undetected dominance
+  all_det <- sum(rowSums(y == 1, na.rm = TRUE) == n_visits)
+  all_undet <- sum(!detected)
+  if (all_det / N > 0.8) {
+    add("MEDIUM", "Most sites have all detections",
+        sprintf("%d of %d sites (%.0f%%) detected on every visit.", all_det, N, 100 * all_det / N),
+        "Detection is near-certain at most sites. Detection covariates may not be identifiable.")
+  }
+  if (all_undet / N > 0.8) {
+    add("HIGH", "Most sites have no detections",
+        sprintf("%d of %d sites (%.0f%%) have zero detections.", all_undet, N, 100 * all_undet / N),
+        "Very sparse data. Consider whether the species is too rare for occupancy modelling at this scale.")
+  }
+
+  # 5. Covariate confounding between occ and det
+  if (!is.null(data$occ.covs) && !is.null(data$det.covs)) {
+    occ_names <- names(data$occ.covs)
+    det_names <- names(data$det.covs)
+    shared <- intersect(occ_names, det_names)
+    if (length(shared) > 0) {
+      add("HIGH", "Same covariate in occupancy and detection",
+          sprintf("Shared covariates: %s", paste(shared, collapse = ", ")),
+          "Using the same variable for both processes causes confounding. Remove from one process or use different transformations.")
+    }
+  }
+
+  # 6. Random effect checks (pre-fit: from explicit RE specs)
+  re_occ <- occ.re
+  re_det <- det.re
+  if (is.null(re_occ) && inherits(object, "occu_em")) re_occ <- object$occ_re
+  if (is.null(re_det) && inherits(object, "occu_em")) re_det <- object$det_re
+
+  if (!is.null(re_occ) || !is.null(re_det)) {
+    all_re <- c(re_occ, re_det)
+    re_groups <- vapply(all_re, function(r) r$group, character(1))
+    re_process <- c(rep("occ", length(re_occ)), rep("det", length(re_det)))
+
+    # 6a. Same group in both processes
+    occ_groups <- unique(re_groups[re_process == "occ"])
+    det_groups <- unique(re_groups[re_process == "det"])
+    crossed <- intersect(occ_groups, det_groups)
+    if (length(crossed) > 0) {
+      add("HIGH", "Same RE grouping variable in both processes",
+          sprintf("Group '%s' appears in both occupancy and detection random effects.", paste(crossed, collapse = "', '")),
+          "Random intercepts for the same group on both processes are usually non-identifiable. Keep the RE on one process only.")
+    }
+
+    # 6b. Sites per group level
+    for (i in seq_along(all_re)) {
+      grp <- re_groups[i]
+      vals <- data$occ.covs[[grp]]
+      if (is.null(vals) && !is.null(data$det.covs)) {
+        vals <- data$det.covs[[grp]]
+        if (is.matrix(vals)) vals <- vals[, 1]
+      }
+      if (!is.null(vals)) {
+        tab <- table(vals)
+        n_levels <- length(tab)
+        min_per_level <- min(tab)
+        median_per_level <- median(tab)
+
+        if (min_per_level < 3) {
+          add("HIGH", sprintf("RE group '%s' has levels with < 3 sites", grp),
+              sprintf("%d levels, smallest has %d sites. Variance is poorly estimated for small groups.", n_levels, min_per_level),
+              "Merge small groups or drop the random effect.")
+        } else if (median_per_level < 5) {
+          add("MEDIUM", sprintf("RE group '%s' has few sites per level", grp),
+              sprintf("%d levels, median %d sites per level.", n_levels, as.integer(median_per_level)),
+              "Random effect variance may be imprecise.")
+        }
+
+        if (n_levels > N / 2) {
+          add("HIGH", sprintf("RE group '%s' has too many levels", grp),
+              sprintf("%d levels for %d sites. More groups than data can support.", n_levels, N),
+              "Use a fixed effect, reduce levels, or remove.")
+        }
+      }
+    }
+  }
+
+  # ---------------------------------------------------------------
+  # Post-fit checks (only on fitted objects)
+  # ---------------------------------------------------------------
+  if (inherits(object, "occu_em")) {
+
+    # 7. Boundary estimates
+    psi <- object$psi_hat
+    p   <- object$p_hat
+    n_psi_boundary <- sum(psi < 0.01 | psi > 0.99)
+    if (n_psi_boundary > N * 0.2) {
+      add("HIGH", "Many occupancy estimates at boundary",
+          sprintf("%d of %d sites (%.0f%%) have psi < 0.01 or > 0.99.", n_psi_boundary, N, 100 * n_psi_boundary / N),
+          "Boundary estimates suggest the model is overfit or data is too sparse for the model complexity.")
+    }
+
+    if (!is.null(p)) {
+      p_vec <- as.numeric(p[!is.na(p)])
+      n_p_boundary <- sum(p_vec < 0.01 | p_vec > 0.99)
+      if (n_p_boundary > length(p_vec) * 0.2) {
+        add("MEDIUM", "Many detection estimates at boundary",
+            sprintf("%.0f%% of detection probabilities are < 0.01 or > 0.99.", 100 * n_p_boundary / length(p_vec)),
+            "Detection model may be overparameterised.")
+      }
+    }
+
+    # 8. Large SEs on fixed effects
+    if (!is.null(object$occ_fit$summary.fixed)) {
+      occ_se <- object$occ_fit$summary.fixed$sd
+      large_se <- occ_se > 5
+      if (any(large_se)) {
+        bad_names <- rownames(object$occ_fit$summary.fixed)[large_se]
+        add("HIGH", "Large SE on occupancy coefficients",
+            sprintf("SE > 5 for: %s", paste(bad_names, collapse = ", ")),
+            "These coefficients are poorly identified. Simplify the model or check for separation.")
+      }
+    }
+    if (!is.null(object$det_fit$summary.fixed)) {
+      det_se <- object$det_fit$summary.fixed$sd
+      large_se <- det_se > 5
+      if (any(large_se)) {
+        bad_names <- rownames(object$det_fit$summary.fixed)[large_se]
+        add("HIGH", "Large SE on detection coefficients",
+            sprintf("SE > 5 for: %s", paste(bad_names, collapse = ", ")),
+            "These coefficients are poorly identified. Simplify the detection model.")
+      }
+    }
+
+    # 9. RE variance at boundary
+    if (!is.null(object$occ_fit$summary.hyperpar)) {
+      hyp <- object$occ_fit$summary.hyperpar
+      prec_rows <- grep("[Pp]recision", rownames(hyp))
+      for (r in prec_rows) {
+        prec_mean <- hyp$mean[r]
+        nm <- rownames(hyp)[r]
+        if (prec_mean > 1000) {
+          add("MEDIUM", sprintf("RE variance collapsed: %s", nm),
+              sprintf("Precision = %.0f (variance ~ %.4f). The random effect has shrunk to zero.", prec_mean, 1/prec_mean),
+              "This RE is not supported by the data. Consider dropping it.")
+        } else if (prec_mean < 0.1) {
+          add("HIGH", sprintf("RE variance very large: %s", nm),
+              sprintf("Precision = %.3f (variance ~ %.1f). The RE is absorbing most of the variation.", prec_mean, 1/prec_mean),
+              "The RE may be confounded with the fixed effects or the other process. Simplify.")
+        }
+      }
+    }
+
+    # 10. Convergence
+    if (!isTRUE(object$converged)) {
+      add("HIGH", "EM did not converge",
+          sprintf("Ran %d iterations without converging.", object$n_iter %||% NA),
+          "Try increasing max.iter, adjusting damping, or simplifying the model.")
+    }
+  }
+
+  # Build output
+  if (length(issues) == 0) {
+    result <- data.frame(severity = character(), issue = character(),
+                         reason = character(), suggestion = character(),
+                         stringsAsFactors = FALSE)
+  } else {
+    result <- do.call(rbind, issues)
+  }
+
+  # Sort: HIGH first
+  sev_order <- c(HIGH = 1, MEDIUM = 2, LOW = 3)
+  result <- result[order(sev_order[result$severity]), ]
+  rownames(result) <- NULL
+
+  out <- list(issues = result, n_issues = nrow(result))
+  class(out) <- "occu_identifiability"
+  out
+}
+
+
+#' @export
+print.occu_identifiability <- function(x, ...) {
+  n <- x$n_issues
+  if (n == 0) {
+    cat("No identifiability issues detected.\n")
+    return(invisible(x))
+  }
+
+  n_high <- sum(x$issues$severity == "HIGH")
+  n_med  <- sum(x$issues$severity == "MEDIUM")
+  n_low  <- sum(x$issues$severity == "LOW")
+  cat(sprintf("Identifiability check: %d issue(s) found", n))
+  parts <- character()
+  if (n_high > 0) parts <- c(parts, sprintf("%d HIGH", n_high))
+  if (n_med > 0)  parts <- c(parts, sprintf("%d MEDIUM", n_med))
+  if (n_low > 0)  parts <- c(parts, sprintf("%d LOW", n_low))
+  cat(sprintf(" (%s)\n\n", paste(parts, collapse = ", ")))
+
+  for (i in seq_len(n)) {
+    row <- x$issues[i, ]
+    marker <- switch(row$severity, HIGH = "!!", MEDIUM = "!", LOW = "~")
+    cat(sprintf("[%s] %s\n", marker, row$issue))
+    cat(sprintf("    %s\n", row$reason))
+    cat(sprintf("    -> %s\n\n", row$suggestion))
+  }
+  invisible(x)
+}
+
+
+# =============================================================================
 # checkModel  —  diagnostic panel plot
 # =============================================================================
 
