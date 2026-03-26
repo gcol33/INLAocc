@@ -16,16 +16,9 @@ knitr::opts_chunk$set(
 )
 ```
 
-## Overview
+## Fitting a model
 
-INLAocc fits occupancy models — the kind that estimate species occurrence
-while accounting for imperfect detection — using INLA instead of MCMC.
-If you've used spOccupancy, the data format and model types are the same.
-The difference is speed: seconds instead of minutes.
-
-## Fitting a basic model
-
-Simulate some data and fit a single-species occupancy model:
+Simulate data and fit a single-species occupancy model:
 
 ```{r basic, eval = FALSE}
 library(INLAocc)
@@ -35,15 +28,27 @@ fit <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data)
 summary(fit)
 ```
 
-The formula interface is `occu(occ.formula, det.formula, data)` — occupancy
-covariates on the left, detection covariates on the right.
+First formula is occupancy, second is detection. If you omit the detection
+formula, it defaults to `~ 1` with a warning.
+
+## Exploring the data first
+
+Before fitting, check what you're working with:
+
+```{r explore, eval = FALSE}
+summary(sim$data)
+plot(sim$data)
+```
+
+`summary()` gives detection frequencies, naive occupancy and detection rates,
+visit completeness, and per-visit detection rates. `plot()` produces a panel
+with histograms and (if coordinates exist) a spatial detection map.
 
 ## Random effects
 
-INLAocc parses mixed-model random effects via its own AST walker:
+Random intercepts and slopes go directly in the formula:
 
 ```{r re, eval = FALSE}
-# Add a regional random intercept
 sim$data$occ.covs$region <- sample(1:5, 200, replace = TRUE)
 
 fit_re <- occu(
@@ -54,12 +59,12 @@ fit_re <- occu(
 ranef(fit_re)
 ```
 
-Supported syntax: `(1 | group)`, `(x | group)`, `(x || group)` (uncorrelated),
-`(1 | a/b)` (nested).
+Also supported: `(x | group)` for random slopes, `(x || group)` for
+uncorrelated slopes, and `(1 | a/b)` for nested grouping.
 
 ## Spatial models
 
-Pass coordinates to enable an SPDE spatial random effect:
+Pass coordinates to add an SPDE spatial random effect:
 
 ```{r spatial, eval = FALSE}
 sim_sp <- simulate_occu(N = 200, J = 4, spatial_range = 0.2, seed = 123)
@@ -69,41 +74,54 @@ fit_sp <- occu(~ occ_x1, ~ det_x1, data = sim_sp$data,
 summary(fit_sp)
 ```
 
-## Model diagnostics
+The mesh is auto-scaled from the coordinate extent. To control resolution
+(units match your CRS, so metres for UTM):
 
-### One-call diagnostic panel
+```{r mesh, eval = FALSE}
+fit_sp <- occu(~ occ_x1, ~ det_x1, data = sim_sp$data,
+               spatial = sim_sp$data$coords,
+               spde.args = list(max.edge = c(5000, 15000)))
+```
+
+After fitting, extract the estimated spatial range:
+
+```{r range, eval = FALSE}
+spatialRange(fit_sp)
+```
+
+This returns the posterior mean, SD, and 95% credible interval for the SPDE
+range parameter, in the same units as your coordinates.
+
+## Diagnostics
+
+`checkModel()` produces a diagnostic panel in one call:
 
 ```{r check, eval = FALSE}
 checkModel(fit_sp)
 ```
 
-This produces a 2x2 panel: QQ plot of PIT residuals, residuals vs fitted,
-dispersion test, and a Moran's I correlogram (because coordinates are
-available).
+Four panels: QQ plot of PIT residuals against Uniform(0,1), residuals vs
+fitted, dispersion histogram, and a Moran's I correlogram (when coordinates
+are available).
 
-### Individual tests
-
-Each diagnostic is also available as a standalone function:
+Each test is also available on its own:
 
 ```{r diag, eval = FALSE}
-testUniformity(fit)     # KS test: are PIT residuals uniform?
+testUniformity(fit)     # KS test on PIT residuals
 testDispersion(fit)     # over/underdispersion
 testOutliers(fit)       # simulation envelope
 testZeroInflation(fit)  # excess unoccupied sites
 moranI(fit_sp)          # spatial autocorrelation in residuals
+variogram(fit_sp)       # empirical semivariogram
 ```
 
-All return `htest` objects, so `$p.value` and `print()` work as expected.
+All return `htest` objects with `$p.value`.
 
-### DHARMa bridge
-
-If you have DHARMa installed, one call gives you the full DHARMa object:
+If you have DHARMa installed:
 
 ```{r dharma, eval = FALSE}
 res <- dharma(fit)
-DHARMa::testSpatialAutocorrelation(res,
-  x = sim_sp$data$coords[, 1],
-  y = sim_sp$data$coords[, 2])
+plot(res)
 ```
 
 ## Model comparison and averaging
@@ -113,27 +131,29 @@ m1 <- occu(~ 1, ~ 1, data = sim$data)
 m2 <- occu(~ occ_x1, ~ det_x1, data = sim$data)
 m3 <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data)
 
-# Compare with AIC weights
 compare_models(null = m1, elev = m2, full = m3, criterion = "aic")
-
-# Model-averaged predictions (Burnham & Anderson)
-avg <- modelAverage(null = m1, elev = m2, full = m3, criterion = "aic")
-avg$psi_hat   # weighted-average occupancy
-avg$psi_se    # unconditional standard errors
 ```
 
-`compare_models()` supports `"aic"`, `"bic"`, and `"waic"` criteria.
+This returns AIC (or BIC/WAIC), delta, and model weights.
+
+For model-averaged predictions:
+
+```{r avg, eval = FALSE}
+avg <- modelAverage(null = m1, elev = m2, full = m3, criterion = "aic")
+avg$psi_hat   # weighted-average occupancy
+avg$psi_se    # unconditional SEs (Burnham & Anderson eq. 4.9)
+```
 
 ## Prediction
 
 ```{r predict, eval = FALSE}
-# ggpredict-style: vary one covariate, hold others at mean
+# Vary one covariate over a grid, hold others at their mean
 predict(fit, terms = "occ_x1 [-2:2 by=0.5]")
 
 # Design-matrix prediction at new sites
 predict(fit, X.0 = data.frame(occ_x1 = 0, occ_x2 = 1))
 
-# Marginal effect plot data
+# Marginal effect curve
 marginal_effect(fit, "occ_x1")
 ```
 
@@ -144,8 +164,6 @@ sim_ms <- simMsOcc(N = 100, J = 3, n_species = 10, seed = 200)
 
 fit_ms <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data, multispecies = TRUE)
 summary(fit_ms)
-
-# Site-level species richness
 richness(fit_ms)
 ```
 
@@ -156,15 +174,16 @@ sim_t <- simTOcc(N = 50, J = 3, n_seasons = 5, seed = 300)
 
 fit_t <- occu(~ 1, ~ 1, data = sim_t$data, temporal = "ar1")
 summary(fit_t)
+temporalCorr(fit_t)
 ```
 
-## Standard S3 methods
+## S3 methods
 
 ```{r s3, eval = FALSE}
 coef(fit)               # posterior means
 confint(fit)            # credible intervals
 tidy(fit)               # broom-compatible data.frame
-glance(fit)             # model-level summary row
+glance(fit)             # one-row model summary
 AIC(fit); BIC(fit)      # information criteria
 update(fit, ~ . - occ_x2)  # refit without occ_x2
 ```
