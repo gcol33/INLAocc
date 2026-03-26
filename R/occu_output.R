@@ -124,6 +124,90 @@ summary.occu_inla_spatial <- function(object, ...) {
 }
 
 
+#' Extract spatial range and standard deviation from a fitted spatial model
+#'
+#' Returns the posterior mean, SD, and 95\% credible interval for the
+#' SPDE range and marginal standard deviation.  The range is in the same
+#' units as the coordinates (e.g. metres for UTM).
+#'
+#' @param object fitted spatial occupancy model (class \code{occu_inla_spatial}
+#'   or any model with a spatial SPDE component)
+#'
+#' @return A data.frame with columns \code{mean}, \code{sd},
+#'   \code{q025}, \code{q975}, and rows \code{range} and \code{stdev}.
+#' @export
+spatialRange <- function(object) {
+  hyp <- object$occ_fit$summary.hyperpar
+  if (is.null(hyp)) stop("No hyperparameters found — is this a spatial model?")
+
+  range_row <- grep("Range", rownames(hyp))
+  stdev_row <- grep("Stdev", rownames(hyp))
+  if (length(range_row) == 0) stop("No spatial range found in hyperparameters")
+
+  rows <- c(range_row[1], stdev_row[1])
+  out <- data.frame(
+    mean = hyp$mean[rows],
+    sd   = hyp$sd[rows],
+    q025 = hyp$`0.025quant`[rows],
+    q975 = hyp$`0.975quant`[rows],
+    row.names = c("range", "stdev")
+  )
+  out
+}
+
+
+#' Extract AR(1) temporal correlation from a fitted temporal model
+#'
+#' Returns the posterior summary for the AR(1) autocorrelation parameter
+#' (rho) and the temporal precision/variance.
+#'
+#' @param object fitted temporal occupancy model (class
+#'   \code{occu_inla_temporal})
+#'
+#' @return A data.frame with columns \code{mean}, \code{sd},
+#'   \code{q025}, \code{q975}.
+#' @export
+temporalCorr <- function(object) {
+  # Temporal models store the joint fit; find AR1 hyperparams
+  occ_fit <- NULL
+  if (!is.null(object$occ_fit)) {
+    occ_fit <- object$occ_fit
+  } else if (!is.null(object$period_fits)) {
+    # Look for the joint fit stored by the temporal engine
+    for (pf in object$period_fits) {
+      if (!is.null(pf$occ_fit$summary.hyperpar)) {
+        occ_fit <- pf$occ_fit
+        break
+      }
+    }
+  }
+  if (is.null(occ_fit)) stop("No occupancy fit found — is this a temporal model?")
+
+  hyp <- occ_fit$summary.hyperpar
+  if (is.null(hyp) || nrow(hyp) == 0) {
+    stop("No hyperparameters found in the occupancy fit")
+  }
+
+  # AR1 rows typically named "GroupRho for period" and "Precision for period"
+  rho_row <- grep("[Rr]ho", rownames(hyp))
+  prec_row <- grep("[Pp]recision.*period", rownames(hyp))
+  rows <- c(rho_row, prec_row)
+
+  if (length(rows) == 0) {
+    stop("No AR(1) parameters found — was the model fit with temporal = 'ar1'?")
+  }
+
+  out <- data.frame(
+    mean = hyp$mean[rows],
+    sd   = hyp$sd[rows],
+    q025 = hyp$`0.025quant`[rows],
+    q975 = hyp$`0.975quant`[rows],
+    row.names = rownames(hyp)[rows]
+  )
+  out
+}
+
+
 #' Summary for multi-species model
 #' @param object fitted occu_inla_ms object
 #' @param ... additional arguments (ignored)
