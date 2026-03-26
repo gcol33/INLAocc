@@ -1,9 +1,10 @@
 #' @keywords internal
 "_PACKAGE"
 
-#' @importFrom stats as.formula binomial coef confint cor glm logLik
-#'   model.matrix nobs pnorm prcomp predict qnorm quantile rbeta rbinom
-#'   rnorm runif sd terms update update.formula var vcov dist setNames lm
+#' @importFrom stats as.formula binom.test binomial coef confint cor dist
+#'   fitted glm ks.test lm logLik lowess median model.matrix nobs pnorm
+#'   prcomp predict qnorm quantile rbeta rbinom residuals rnorm runif sd
+#'   setNames simulate terms update update.formula var vcov
 #' @importFrom Matrix Matrix
 #' @importFrom graphics abline arrows axis barplot hist image legend lines
 #'   par plot points polygon

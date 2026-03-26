@@ -915,10 +915,12 @@ glance.occu_inla <- function(x, ...) {
 }
 
 
-#' Compare two occupancy models via WAIC
+#' Compare occupancy models via information criteria
 #'
 #' @param ... named occu_inla objects to compare
-#' @return data.frame with model comparison metrics
+#' @param criterion \code{"waic"} (default), \code{"aic"}, or \code{"bic"} —
+#'   used for ranking and computing model weights
+#' @return data.frame with model comparison metrics, delta IC, and weights
 #' @export
 compare_models <- function(..., criterion = c("waic", "aic", "bic")) {
   criterion <- match.arg(criterion)

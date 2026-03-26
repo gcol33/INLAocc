@@ -2,16 +2,19 @@
 % Please edit documentation in R/occu_output.R
 \name{compare_models}
 \alias{compare_models}
-\title{Compare two occupancy models via WAIC}
+\title{Compare occupancy models via information criteria}
 \usage{
 compare_models(..., criterion = c("waic", "aic", "bic"))
 }
 \arguments{
 \item{...}{named occu_inla objects to compare}
+
+\item{criterion}{\code{"waic"} (default), \code{"aic"}, or \code{"bic"} —
+used for ranking and computing model weights}
 }
 \value{
-data.frame with model comparison metrics
+data.frame with model comparison metrics, delta IC, and weights
 }
 \description{
-Compare two occupancy models via WAIC
+Compare occupancy models via information criteria
 }
