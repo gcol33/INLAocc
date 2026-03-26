@@ -21,7 +21,7 @@ Initial release.
 ## Random Effects
 * Native AST-based formula parser for `(1 | group)`, `(x | group)`, `(x || group)` syntax.
 * Supports nested grouping `(1 | a/b)`, operator expansion `(a*b | group)`.
-* No lme4 dependency.
+* Pure AST walker — no regex on deparsed code.
 
 ## Diagnostics
 * `ppcOccu()`: posterior predictive checks (Freeman-Tukey, chi-squared).

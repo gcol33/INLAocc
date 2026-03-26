@@ -40,7 +40,7 @@ covariates on the left, detection covariates on the right.
 
 ## Random effects
 
-INLAocc parses lme4-style random effects natively (no lme4 dependency):
+INLAocc parses mixed-model random effects via its own AST walker:
 
 ```{r re, eval = FALSE}
 # Add a regional random intercept

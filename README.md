@@ -47,7 +47,7 @@ Every model type in spOccupancy has a corresponding INLAocc call through a singl
 
 ### Random Effects
 
-Native mixed-model formula syntax — no lme4 dependency:
+Mixed-model formula syntax with native AST parsing:
 
 ```r
 occu(~ elev + (1 | region), ~ effort, data)              # random intercept
