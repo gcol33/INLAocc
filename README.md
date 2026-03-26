@@ -6,9 +6,9 @@
 
 # INLAocc
 
-**Fast occupancy models using INLA — a Laplace-based alternative to MCMC.**
+**Occupancy models via Integrated Nested Laplace Approximation.**
 
-INLAocc fits single-species, multi-species, spatial, temporal, and integrated occupancy models in seconds where spOccupancy takes minutes. Same data format, same model types, same diagnostics — just faster.
+Fit single-species, multi-species, spatial, temporal, and integrated occupancy models through one function. INLAocc uses an EM algorithm with INLA at each M-step, giving fast and accurate estimates of species occurrence while accounting for imperfect detection.
 
 ## Quick Start
 
@@ -23,27 +23,29 @@ summary(fit)
 checkModel(fit)
 ```
 
-## Statement of Need
+## Why INLAocc
 
-Occupancy models estimate where species occur while accounting for imperfect detection. The standard Bayesian approach (MCMC via spOccupancy) is accurate but slow — minutes per model, hours for multi-species or spatial extensions. INLAocc replaces the MCMC sampler with an EM algorithm that uses INLA at each M-step, giving comparable estimates in a fraction of the time. A novel EM + multiple imputation hybrid corrects for beta attenuation, achieving correlations > 0.99 with MCMC estimates.
+Occupancy models separate two entangled processes — where a species actually occurs (occupancy) and where you happen to detect it (detection). Getting this right matters for conservation decisions, but fitting these models with MCMC can be slow, especially for spatial or multi-species extensions.
+
+INLAocc takes a different approach: an EM algorithm that calls INLA at each M-step. A novel multiple imputation step corrects for the attenuation bias inherent in EM-based occupancy estimation. The result is fast, accurate occupancy inference with a clean R interface.
 
 ## Features
 
 ### Model Types
 
-Every model type in spOccupancy has a corresponding INLAocc call through a single unified `occu()` interface:
+One `occu()` call handles everything — model type is determined by the arguments you pass:
 
-| spOccupancy | INLAocc | Description |
-|---|---|---|
-| `PGOcc` | `occu()` | Single-species |
-| `spPGOcc` | `occu(..., spatial = coords)` | Spatial SPDE |
-| `tPGOcc` | `occu(..., temporal = "ar1")` | Multi-season AR(1) |
-| `msPGOcc` | `occu(..., multispecies = TRUE)` | Community |
-| `lfMsPGOcc` | `occu(..., multispecies = TRUE, n.factors = k)` | Latent factor |
-| `sfMsPGOcc` | `occu(..., multispecies = TRUE, n.factors = k, spatial = coords)` | Spatial factor |
-| `svcPGOcc` | `occu(..., spatial = coords, svc = 1)` | Spatially-varying coefficients |
-| `intPGOcc` | `occu(..., integrated = TRUE)` | Integrated multi-source |
-| `lfJSDM` | `occu(..., multispecies = "jsdm")` | Joint SDM (no detection) |
+| Call | Description |
+|---|---|
+| `occu(~ x, ~ x, data)` | Single-species |
+| `occu(..., spatial = coords)` | Spatial (SPDE mesh) |
+| `occu(..., temporal = "ar1")` | Multi-season with AR(1) |
+| `occu(..., multispecies = TRUE)` | Community model |
+| `occu(..., multispecies = TRUE, n.factors = k)` | Latent factor |
+| `occu(..., multispecies = TRUE, n.factors = k, spatial = coords)` | Spatial factor |
+| `occu(..., spatial = coords, svc = 1)` | Spatially-varying coefficients |
+| `occu(..., integrated = TRUE)` | Integrated multi-source |
+| `occu(..., multispecies = "jsdm")` | Joint SDM (no detection) |
 
 ### Random Effects
 
@@ -58,10 +60,10 @@ occu(~ elev + (1 | site/plot), ~ effort, data)            # nested
 
 ### Diagnostics
 
-Full diagnostic suite — native implementations with zero external dependencies:
+Full diagnostic suite with zero external dependencies:
 
 ```r
-# Simulation-based (DHARMa equivalents)
+# Simulation-based residual checks
 simulate(fit, nsim = 250)          # posterior predictive simulation
 pitResiduals(fit)                  # PIT scaled residuals
 testUniformity(fit)                # KS test on PIT residuals
@@ -83,7 +85,7 @@ AIC(fit); BIC(fit)                 # information criteria
 checkModel(fit)                    # QQ, residuals, dispersion, correlogram
 ```
 
-If DHARMa is installed, `dharma(fit)` creates a full DHARMa object for access to all DHARMa tests.
+If DHARMa is installed, `dharma(fit)` creates a full DHARMa object.
 
 ### Model Selection & Averaging
 
@@ -110,8 +112,6 @@ richness(fit_ms)                                 # multi-species richness
 ```
 
 ### S3 Methods
-
-Full integration with R's generic function system:
 
 ```r
 coef(fit)              # posterior means
@@ -183,6 +183,10 @@ m3 <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data)
 
 avg <- modelAverage(null = m1, elev = m2, full = m3)
 ```
+
+## Coming from spOccupancy?
+
+INLAocc accepts the same `list(y, occ.covs, det.covs, coords)` data format. The main differences: one `occu()` function instead of separate model functions, no MCMC tuning parameters, and random slopes are supported in addition to random intercepts.
 
 ## Documentation
 
