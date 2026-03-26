@@ -27,7 +27,7 @@ checkModel(fit)
 
 Occupancy models separate two entangled processes — where a species actually occurs (occupancy) and where you happen to detect it (detection). Getting this right matters for conservation decisions, but fitting these models with MCMC can be slow, especially for spatial or multi-species extensions.
 
-INLAocc iterates between guessing which sites are truly occupied (E-step) and fitting the occupancy and detection models given those guesses (M-step). Each M-step uses INLA — a fast Bayesian approximation — instead of running an MCMC chain. A multiple imputation step then corrects for the bias this shortcut introduces. The result matches MCMC estimates (correlation > 0.99) at a fraction of the runtime.
+The core problem: at sites where you never detected the species, you don't know if it was absent or just missed. INLAocc handles this by iterating two steps. First, it estimates the probability that each undetected site is truly occupied, using the current model (E-step). Then, treating those probabilities as data, it refits the occupancy and detection models using INLA — a fast Bayesian method (M-step). This back-and-forth repeats until the estimates stabilise. A multiple imputation step then corrects for the bias this approach introduces. The result matches full MCMC estimates (correlation > 0.99) at a fraction of the runtime.
 
 ## Features
 
