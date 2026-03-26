@@ -641,3 +641,359 @@ postHocLM <- function(formula, data, weights = NULL,
   class(out) <- "postHocLM"
   out
 }
+
+
+# =============================================================================
+# simulate / autocorrelation / variogram / DHARMa
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+#  simulate.occu_inla  —  posterior predictive simulation
+# ---------------------------------------------------------------------------
+
+#' Simulate replicate datasets from a fitted occupancy model
+#'
+#' Generates posterior predictive datasets by sampling the latent occupancy
+#' state z from Bernoulli(psi) and observations y from Bernoulli(z * p)
+#' at each visit.  Returns a site-level summary (number of detections per
+#' site) suitable for DHARMa's \code{createDHARMa()}.
+#'
+#' @param object fitted \code{occu_inla} object
+#' @param nsim number of replicate datasets (default 250)
+#' @param seed random seed for reproducibility (default 123)
+#' @param level \code{"site"} (default) returns an N x nsim matrix of
+#'   per-site detection counts; \code{"obs"} returns an (N*J) x nsim matrix
+#'   of individual visit outcomes.
+#' @param ... ignored
+#'
+#' @return A matrix (see \code{level}).
+#' @export
+simulate.occu_inla <- function(object, nsim = 250L, seed = 123L,
+                                level = c("site", "obs"), ...) {
+  level <- match.arg(level)
+  set.seed(seed)
+
+  psi <- clamp(object$psi_hat)
+  p   <- clamp(object$p_hat)
+  N   <- object$data$N
+  J   <- object$data$J
+  not_na <- !is.na(object$data$y)
+
+  if (level == "site") {
+    out <- matrix(NA_integer_, N, nsim)
+    for (s in seq_len(nsim)) {
+      z <- rbinom(N, 1L, psi)
+      y_sim <- matrix(0L, N, J)
+      y_sim[not_na] <- rbinom(sum(not_na), 1L, (z * p)[not_na])
+      out[, s] <- rowSums(y_sim)
+    }
+  } else {
+    # obs-level: flatten N x J → (N*J) vector, only non-NA cells
+    obs_idx <- which(not_na)
+    n_obs <- length(obs_idx)
+    out <- matrix(NA_integer_, n_obs, nsim)
+    for (s in seq_len(nsim)) {
+      z <- rbinom(N, 1L, psi)
+      prob <- (z * p)[obs_idx]
+      out[, s] <- rbinom(n_obs, 1L, prob)
+    }
+  }
+  out
+}
+
+
+# ---------------------------------------------------------------------------
+#  moranI  —  Moran's I test for spatial autocorrelation in residuals
+# ---------------------------------------------------------------------------
+
+#' Moran's I test for spatial autocorrelation
+#'
+#' Computes Moran's I on occupancy residuals using an inverse-distance
+#' weight matrix (k nearest neighbours).  No external dependencies —
+#' uses the normal approximation under the randomisation assumption.
+#'
+#' @param object fitted \code{occu_inla} object, or a numeric vector of
+#'   residuals (in which case \code{coords} must be supplied)
+#' @param coords optional N x 2 coordinate matrix.
+#'   If \code{object} is an \code{occu_inla} fit, defaults to
+#'   \code{object$data$coords}.
+#' @param weights weight scheme: \code{"inverse"} (default) uses
+#'   inverse-distance weights on all pairs (matches DHARMa),
+#'   \code{"knn"} uses k nearest-neighbour binary weights
+#' @param k number of nearest neighbours (only used when
+#'   \code{weights = "knn"}, default 10)
+#' @param resid.type residual type passed to \code{residuals()} if
+#'   \code{object} is a fit (default \code{"deviance"})
+#' @param alternative \code{"two.sided"} (default), \code{"greater"}, or
+#'   \code{"less"}
+#'
+#' @return A list of class \code{"htest"} with components \code{statistic},
+#'   \code{p.value}, \code{parameter} (expected I), and \code{method}.
+#' @export
+moranI <- function(object, coords = NULL,
+                   weights = c("inverse", "knn"), k = 10L,
+                   resid.type = "deviance",
+                   alternative = c("two.sided", "greater", "less")) {
+  alternative <- match.arg(alternative)
+  weights <- match.arg(weights)
+
+  # Extract residuals and coords
+  if (inherits(object, "occu_em")) {
+    x <- residuals(object, type = resid.type)$occ.resids
+    if (is.null(coords)) coords <- object$data$coords
+  } else if (is.numeric(object)) {
+    x <- object
+  } else {
+    stop("object must be an occu_inla fit or a numeric vector of residuals")
+  }
+  if (is.null(coords)) stop("coords required for Moran's I")
+  coords <- as.matrix(coords)
+
+  N <- length(x)
+  if (nrow(coords) != N) {
+    stop(sprintf("coords has %d rows but residuals has length %d",
+                 nrow(coords), N))
+  }
+
+  # Build weight matrix
+  D <- as.matrix(dist(coords))
+  if (weights == "inverse") {
+    W <- 1 / D
+    diag(W) <- 0
+    # Zero out infinite values (identical points)
+    W[!is.finite(W)] <- 0
+    method_str <- "Moran's I (inverse-distance weights)"
+  } else {
+    k <- min(k, N - 1L)
+    W <- matrix(0, N, N)
+    for (i in seq_len(N)) {
+      nn <- order(D[i, ])[2:(k + 1L)]
+      W[i, nn] <- 1
+    }
+    method_str <- sprintf("Moran's I (k=%d nearest neighbours)", k)
+  }
+
+  # Moran's I statistic
+  xbar <- mean(x)
+  dx <- x - xbar
+  ss <- sum(dx^2)
+  S0 <- sum(W)
+  I <- (N / S0) * (as.numeric(dx %*% W %*% dx) / ss)
+
+  # Expected value and variance under randomisation
+  EI <- -1 / (N - 1)
+  S1 <- 0.5 * sum((W + t(W))^2)
+  S2 <- sum((rowSums(W) + colSums(W))^2)
+  n2 <- N^2
+  k2 <- (sum(dx^4) / N) / (ss / N)^2  # kurtosis
+  VI <- (N * ((n2 - 3 * N + 3) * S1 - N * S2 + 3 * S0^2) -
+         k2 * (N * (N - 1) * S1 - 2 * N * S2 + 6 * S0^2)) /
+        ((N - 1) * (N - 2) * (N - 3) * S0^2) - EI^2
+
+  Z <- (I - EI) / sqrt(VI)
+  p_val <- switch(alternative,
+    two.sided = 2 * pnorm(abs(Z), lower.tail = FALSE),
+    greater   = pnorm(Z, lower.tail = FALSE),
+    less      = pnorm(Z, lower.tail = TRUE)
+  )
+
+  structure(
+    list(
+      statistic = c("Moran's I" = I),
+      parameter = c("Expected I" = EI),
+      p.value   = p_val,
+      alternative = alternative,
+      method    = method_str,
+      data.name = deparse(substitute(object))
+    ),
+    class = "htest"
+  )
+}
+
+
+# ---------------------------------------------------------------------------
+#  durbinWatson  —  Durbin-Watson test for temporal autocorrelation
+# ---------------------------------------------------------------------------
+
+#' Durbin-Watson test for temporal autocorrelation in residuals
+#'
+#' Tests whether occupancy residuals across time periods exhibit first-order
+#' autocorrelation.  Designed for temporal occupancy models where each period
+#' yields a site-averaged residual.
+#'
+#' @param object fitted \code{occu_inla_temporal} object, or a numeric vector
+#'   of temporally-ordered residuals
+#' @param resid.type residual type (default \code{"deviance"})
+#' @param alternative \code{"two.sided"} (default), \code{"greater"} (positive
+#'   autocorrelation), or \code{"less"} (negative autocorrelation)
+#'
+#' @return A list of class \code{"htest"} with the DW statistic, approximate
+#'   p-value (normal approximation), and the lag-1 autocorrelation.
+#' @export
+durbinWatson <- function(object, resid.type = "deviance",
+                          alternative = c("two.sided", "greater", "less")) {
+  alternative <- match.arg(alternative)
+
+  if (inherits(object, "occu_inla_temporal")) {
+    # Average occupancy residual per period
+    r_list <- residuals(object, type = resid.type)
+    x <- vapply(r_list, function(r) mean(r$occ.resids, na.rm = TRUE),
+                numeric(1))
+  } else if (is.numeric(object)) {
+    x <- object
+  } else {
+    stop("object must be an occu_inla_temporal fit or a numeric vector")
+  }
+
+  n <- length(x)
+  if (n < 3L) stop("need at least 3 time points for Durbin-Watson test")
+
+  # DW statistic
+  e <- x - mean(x)
+  dw <- sum(diff(e)^2) / sum(e^2)
+
+  # Under H0: E[DW] ≈ 2, r1 ≈ 0
+  # Approximate: DW ≈ 2(1 - r1), so r1 ≈ 1 - DW/2
+  r1 <- 1 - dw / 2
+
+  # Normal approximation (Pan, 1968): E[DW] ≈ 2, Var[DW] ≈ 4/n
+  Z <- (dw - 2) / sqrt(4 / n)
+  p_val <- switch(alternative,
+    two.sided = 2 * pnorm(abs(Z), lower.tail = FALSE),
+    greater   = pnorm(Z, lower.tail = TRUE),   # DW < 2 → positive autocorr
+    less      = pnorm(Z, lower.tail = FALSE)    # DW > 2 → negative autocorr
+  )
+
+  structure(
+    list(
+      statistic   = c("DW" = dw),
+      parameter   = c("lag-1 r" = r1),
+      p.value     = p_val,
+      alternative = alternative,
+      method      = "Durbin-Watson test for temporal autocorrelation",
+      data.name   = deparse(substitute(object))
+    ),
+    class = "htest"
+  )
+}
+
+
+# ---------------------------------------------------------------------------
+#  variogram  —  empirical semivariogram of residuals
+# ---------------------------------------------------------------------------
+
+#' Empirical semivariogram of occupancy residuals
+#'
+#' Computes the empirical semivariogram in distance bins.  Useful for
+#' visually assessing whether spatial structure remains in the residuals
+#' after model fitting.
+#'
+#' @param object fitted \code{occu_inla} object, or a numeric vector of
+#'   residuals (in which case \code{coords} must be supplied)
+#' @param coords optional N x 2 coordinate matrix (defaults to
+#'   \code{object$data$coords})
+#' @param n.bins number of distance bins (default 15)
+#' @param max.dist maximum distance to consider (default: half the max
+#'   pairwise distance)
+#' @param resid.type residual type (default \code{"deviance"})
+#'
+#' @return A data.frame of class \code{"occu_variogram"} with columns
+#'   \code{dist} (bin midpoint), \code{gamma} (semivariance), and
+#'   \code{n.pairs} (number of pairs in bin).  Has a \code{plot()} method.
+#' @export
+variogram <- function(object, coords = NULL, n.bins = 15L,
+                       max.dist = NULL, resid.type = "deviance") {
+
+  if (inherits(object, "occu_em")) {
+    x <- residuals(object, type = resid.type)$occ.resids
+    if (is.null(coords)) coords <- object$data$coords
+  } else if (is.numeric(object)) {
+    x <- object
+  } else {
+    stop("object must be an occu_inla fit or a numeric vector of residuals")
+  }
+  if (is.null(coords)) stop("coords required for variogram")
+  coords <- as.matrix(coords)
+  N <- length(x)
+
+  # Pairwise distances (lower triangle only)
+  D <- dist(coords)
+  d_vec <- as.numeric(D)
+  if (is.null(max.dist)) max.dist <- max(d_vec) / 2
+
+  # Pairwise squared differences
+  idx <- which(lower.tri(matrix(0, N, N)), arr.ind = TRUE)
+  sq_diff <- (x[idx[, 1]] - x[idx[, 2]])^2
+
+  # Bin edges
+  breaks <- seq(0, max.dist, length.out = n.bins + 1L)
+  mids   <- (breaks[-1] + breaks[-(n.bins + 1L)]) / 2
+
+  gamma   <- numeric(n.bins)
+  n_pairs <- integer(n.bins)
+  for (b in seq_len(n.bins)) {
+    in_bin <- d_vec >= breaks[b] & d_vec < breaks[b + 1L]
+    n_pairs[b] <- sum(in_bin)
+    if (n_pairs[b] > 0) {
+      gamma[b] <- mean(sq_diff[in_bin]) / 2
+    }
+  }
+
+  out <- data.frame(dist = mids, gamma = gamma, n.pairs = n_pairs)
+  out <- out[out$n.pairs > 0, ]
+  class(out) <- c("occu_variogram", "data.frame")
+  out
+}
+
+
+#' @export
+plot.occu_variogram <- function(x, ...) {
+  plot(x$dist, x$gamma,
+       xlab = "Distance", ylab = "Semivariance",
+       main = "Empirical Semivariogram of Residuals",
+       pch = 19, cex = sqrt(x$n.pairs / max(x$n.pairs)) * 2,
+       ...)
+  lines(x$dist, x$gamma, lty = 2, col = "grey50")
+  invisible(x)
+}
+
+
+# ---------------------------------------------------------------------------
+#  dharma  —  DHARMa convenience wrapper (optional dependency)
+# ---------------------------------------------------------------------------
+
+#' Create a DHARMa residuals object from a fitted occupancy model
+#'
+#' Thin convenience wrapper that calls \code{simulate()} on the fitted model
+#' and passes the result to \code{DHARMa::createDHARMa()}.  All DHARMa
+#' tests (\code{testSpatialAutocorrelation}, \code{testDispersion}, etc.)
+#' then work on the returned object.
+#'
+#' Requires DHARMa to be installed.  For a dependency-free alternative,
+#' use \code{\link{moranI}}, \code{\link{durbinWatson}}, or
+#' \code{\link{variogram}} directly.
+#'
+#' @param object fitted \code{occu_inla} object
+#' @param nsim number of simulations (default 250)
+#' @param seed random seed (default 123)
+#' @param ... passed to \code{DHARMa::createDHARMa()}
+#'
+#' @return A \code{DHARMa} object (see \code{\link[DHARMa]{createDHARMa}})
+#' @export
+dharma <- function(object, nsim = 250L, seed = 123L, ...) {
+  if (!requireNamespace("DHARMa", quietly = TRUE)) {
+    stop("DHARMa package required. Install with: install.packages('DHARMa')")
+  }
+
+  sims <- simulate(object, nsim = nsim, seed = seed, level = "site")
+  obs  <- rowSums(object$data$y, na.rm = TRUE)
+  fv   <- rowSums(fitted(object)$y.rep, na.rm = TRUE)
+
+  DHARMa::createDHARMa(
+    simulatedResponse       = sims,
+    observedResponse        = obs,
+    fittedPredictedResponse = fv,
+    integerResponse         = TRUE,
+    ...
+  )
+}

@@ -25,6 +25,7 @@ Imports:
     stats,
     utils
 Suggests:
+    DHARMa,
     INLA,
     MASS,
     spOccupancy,
