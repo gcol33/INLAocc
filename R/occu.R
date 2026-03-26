@@ -86,9 +86,11 @@ occu <- function(occ.formula, det.formula = NULL, data,
 
   check_inla()
 
-  # --- GPU / threading setup ---
-  # num.threads = "A:B" (A = outer, B = inner OpenMP threads)
-  # Pass through to INLA via control.inla or directly in engine calls.
+  # --- Default detection formula ---
+  if (is.null(det.formula) && !identical(multispecies, "jsdm")) {
+    warning("No detection formula supplied; defaulting to ~ 1 (intercept-only detection)")
+    det.formula <- ~ 1
+  }
 
   # --- 1. Resolve model type ---
   model_key <- resolve_model_type(

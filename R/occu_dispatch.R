@@ -27,8 +27,7 @@ resolve_model_type <- function(spatial, temporal, multispecies,
     stop("Temporal JSDM is not yet supported")
   if (is_lf && !is_ms)
     stop("n.factors requires multispecies = TRUE or multispecies = 'jsdm'")
-  if (!is_jsdm && is.null(det.formula))
-    stop("det.formula is required (use multispecies = 'jsdm' for models without detection)")
+  # det.formula NULL check handled in occu() — defaults to ~ 1 with warning
 
   # --- Build dispatch key ---
   key <- paste0(
