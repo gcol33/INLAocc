@@ -13,6 +13,9 @@
   type = c("both", "occupancy", "detection"),
   quantiles = c(0.025, 0.5, 0.975),
   n.samples = 500,
+  terms = NULL,
+  process = c("occupancy", "detection"),
+  n_points = 50L,
   ...
 )
 }
@@ -34,13 +37,45 @@ Must include intercept column if model has intercept.}
 
 \item{n.samples}{number of posterior samples for uncertainty}
 
+\item{terms}{character vector of terms to vary, with optional bracket
+notation. Examples: \code{"elev"}, \code{"elev [0:100]"},
+\code{"elev [0:100 by=5]"}, \code{"elev [1, 5, 10]"},
+\code{"habitat [forest, grassland]"}. The first term is the x-axis;
+the second (if any) defines groups; the third defines facets.}
+
+\item{process}{\code{"occupancy"} (default) or \code{"detection"}.
+Only used with \code{terms}.}
+
+\item{n_points}{number of prediction points per continuous term
+(default 50). Only used with \code{terms}.}
+
 \item{...}{additional arguments}
 }
 \value{
-list with psi.0 (occupancy predictions), p.0 (detection predictions),
-z.0 (latent state predictions)
+If \code{terms} is provided, an \code{occu_prediction} data.frame
+with columns \code{x}, \code{estimate}, \code{lower}, \code{upper},
+and optional \code{group}/\code{facet}. Has a \code{plot()} method.
+Otherwise, a list with \code{psi.0}, \code{p.0}, \code{z.0}.
 }
 \description{
-Supports both in-sample and out-of-sample prediction. Out-of-sample
-prediction uses a design matrix (X.0) matching spOccupancy's interface.
+Supports three prediction modes:
+\enumerate{
+\item \strong{terms-based} (like \code{ggpredict}): pass a character vector
+of covariate terms to vary, with optional bracket notation for ranges
+or specific values. Everything else is held at its mean (continuous)
+or mode (factor).
+\item \strong{design-matrix}: pass \code{X.0} / \code{X.p.0} directly
+(spOccupancy-compatible).
+\item \strong{in-sample}: call with no extra arguments.
+}
+}
+\examples{
+\donttest{
+# fit <- occu(~ elev + forest, ~ effort, data)
+# predict(fit, terms = "elev")
+# predict(fit, terms = "elev [0:100 by=10]")
+# predict(fit, terms = c("elev", "forest"))
+# predict(fit, terms = "effort", process = "detection")
+}
+
 }

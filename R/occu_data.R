@@ -126,6 +126,149 @@ occu_format <- function(y, occ.covs = NULL, det.covs = NULL,
 }
 
 
+#' Convert a data.frame to occupancy data
+#'
+#' Converts a long-format data.frame (one row per site-visit) into the
+#' structured list format required by \code{\link{occu}}. Pipe-friendly:
+#' the data.frame is the first argument.
+#'
+#' @param df a data.frame in long format (one row per site-visit).
+#' @param y character: name of the detection column (0/1/NA).
+#' @param site character: name of the site identifier column.
+#' @param visit character: name of the visit/replicate column (integer
+#'   or factor indicating visit number within each site).
+#' @param occ.covs character vector of column names for site-level
+#'   occupancy covariates. If \code{NULL} (default), all columns that
+#'   are constant within each site (excluding \code{y}, \code{site},
+#'   \code{visit}, and \code{det.covs}) are used.
+#' @param det.covs character vector of column names for visit-level
+#'   detection covariates. If \code{NULL} (default), all columns that
+#'   vary within at least one site are used.
+#' @param coords character vector of length 2 giving coordinate column
+#'   names, or \code{NULL}.
+#'
+#' @return An object of class \code{"occu_data"} ready for
+#'   \code{\link{occu}}.
+#'
+#' @examples
+#' # Long-format data
+#' df <- data.frame(
+#'   site = rep(1:50, each = 4),
+#'   visit = rep(1:4, 50),
+#'   detected = rbinom(200, 1, 0.4),
+#'   elev = rep(rnorm(50), each = 4),
+#'   effort = runif(200, 1, 8)
+#' )
+#' dat <- occu_data(df, y = "detected", site = "site", visit = "visit")
+#'
+#' # With pipe
+#' # dat <- df |> occu_data(y = "detected", site = "site", visit = "visit")
+#'
+#' @export
+occu_data <- function(df, y, site, visit,
+                      occ.covs = NULL, det.covs = NULL,
+                      coords = NULL) {
+
+  if (!is.data.frame(df)) stop("df must be a data.frame")
+
+  # Validate required columns exist
+  required <- c(y, site, visit)
+  missing <- setdiff(required, names(df))
+  if (length(missing) > 0) {
+    stop(sprintf("Column(s) not found in df: %s", paste(missing, collapse = ", ")))
+  }
+
+  sites <- df[[site]]
+  visits <- df[[visit]]
+  y_vec <- df[[y]]
+
+  # Determine unique sites (preserve original order)
+  site_ids <- unique(sites)
+  N <- length(site_ids)
+  site_map <- match(sites, site_ids)
+
+  # Determine visit indices
+  if (is.factor(visits)) visits <- as.integer(visits)
+  if (!is.numeric(visits)) {
+    # Convert character/factor visit IDs to integers
+    visit_ids <- unique(visits)
+    visits <- match(visits, visit_ids)
+  }
+  J <- max(visits, na.rm = TRUE)
+
+  # Columns to exclude from auto-detection
+  meta_cols <- c(y, site, visit)
+  if (!is.null(coords)) meta_cols <- c(meta_cols, coords)
+  other_cols <- setdiff(names(df), meta_cols)
+
+  # Auto-detect occ vs det covariates if not specified
+  if (is.null(occ.covs) && is.null(det.covs) && length(other_cols) > 0) {
+    is_site_level <- vapply(other_cols, function(nm) {
+      # Check if values are constant within each site
+      !any(vapply(split(df[[nm]], sites), function(v) {
+        length(unique(v[!is.na(v)])) > 1L
+      }, logical(1)))
+    }, logical(1))
+    occ.covs <- other_cols[is_site_level]
+    det.covs <- other_cols[!is_site_level]
+    if (length(occ.covs) == 0) occ.covs <- NULL
+    if (length(det.covs) == 0) det.covs <- NULL
+    message(sprintf(
+      "No manual occ.covs/det.covs set. Attempted to auto-detect:\n  occ.covs (site-level):  %s\n  det.covs (visit-level): %s",
+      if (!is.null(occ.covs)) paste(occ.covs, collapse = ", ") else "(none)",
+      if (!is.null(det.covs)) paste(det.covs, collapse = ", ") else "(none)"
+    ))
+  }
+
+  # Validate user-specified columns exist
+  if (!is.null(occ.covs)) {
+    bad <- setdiff(occ.covs, names(df))
+    if (length(bad) > 0)
+      stop(sprintf("occ.covs column(s) not found: %s", paste(bad, collapse = ", ")))
+  }
+  if (!is.null(det.covs)) {
+    bad <- setdiff(det.covs, names(df))
+    if (length(bad) > 0)
+      stop(sprintf("det.covs column(s) not found: %s", paste(bad, collapse = ", ")))
+  }
+
+  # Build y matrix (N x J)
+  y_mat <- matrix(NA_integer_, N, J)
+  y_mat[cbind(site_map, visits)] <- as.integer(y_vec)
+
+  # Build occ.covs data.frame (site-level: take first value per site)
+  occ_df <- NULL
+  if (!is.null(occ.covs) && length(occ.covs) > 0) {
+    first_row <- !duplicated(sites)
+    occ_df <- df[first_row, occ.covs, drop = FALSE]
+    rownames(occ_df) <- NULL
+  }
+
+  # Build det.covs list (each element is N x J matrix)
+  det_list <- NULL
+  if (!is.null(det.covs) && length(det.covs) > 0) {
+    det_list <- lapply(setNames(det.covs, det.covs), function(nm) {
+      m <- matrix(NA_real_, N, J)
+      m[cbind(site_map, visits)] <- as.numeric(df[[nm]])
+      m
+    })
+  }
+
+  # Build coords matrix
+  coords_mat <- NULL
+  if (!is.null(coords)) {
+    bad <- setdiff(coords, names(df))
+    if (length(bad) > 0)
+      stop(sprintf("coords column(s) not found: %s", paste(bad, collapse = ", ")))
+    first_row <- !duplicated(sites)
+    coords_mat <- as.matrix(df[first_row, coords, drop = FALSE])
+    rownames(coords_mat) <- NULL
+  }
+
+  occu_format(y_mat, occ_df, det_list, coords_mat)
+}
+
+
 #' Print method for occu_data
 #' @param x an \code{occu_data} object
 #' @param ... additional arguments (ignored)

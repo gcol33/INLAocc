@@ -4,10 +4,27 @@
 
 #' Predict from a fitted occupancy model
 #'
-#' Supports both in-sample and out-of-sample prediction. Out-of-sample
-#' prediction uses a design matrix (X.0) matching spOccupancy's interface.
+#' Supports three prediction modes:
+#' \enumerate{
+#'   \item \strong{terms-based} (like \code{ggpredict}): pass a character vector
+#'     of covariate terms to vary, with optional bracket notation for ranges
+#'     or specific values. Everything else is held at its mean (continuous)
+#'     or mode (factor).
+#'   \item \strong{design-matrix}: pass \code{X.0} / \code{X.p.0} directly
+#'     (spOccupancy-compatible).
+#'   \item \strong{in-sample}: call with no extra arguments.
+#' }
 #'
 #' @param object fitted occu_inla object
+#' @param terms character vector of terms to vary, with optional bracket
+#'   notation. Examples: \code{"elev"}, \code{"elev [0:100]"},
+#'   \code{"elev [0:100 by=5]"}, \code{"elev [1, 5, 10]"},
+#'   \code{"habitat [forest, grassland]"}. The first term is the x-axis;
+#'   the second (if any) defines groups; the third defines facets.
+#' @param process \code{"occupancy"} (default) or \code{"detection"}.
+#'   Only used with \code{terms}.
+#' @param n_points number of prediction points per continuous term
+#'   (default 50). Only used with \code{terms}.
 #' @param X.0 optional: design matrix for occupancy prediction at new locations.
 #'   Must include intercept column if model has intercept.
 #' @param X.p.0 optional: design matrix for detection prediction.
@@ -18,15 +35,36 @@
 #' @param n.samples number of posterior samples for uncertainty
 #' @param ... additional arguments
 #'
-#' @return list with psi.0 (occupancy predictions), p.0 (detection predictions),
-#'   z.0 (latent state predictions)
+#' @return If \code{terms} is provided, an \code{occu_prediction} data.frame
+#'   with columns \code{x}, \code{estimate}, \code{lower}, \code{upper},
+#'   and optional \code{group}/\code{facet}. Has a \code{plot()} method.
+#'   Otherwise, a list with \code{psi.0}, \code{p.0}, \code{z.0}.
+#'
+#' @examples
+#' \donttest{
+#' # fit <- occu(~ elev + forest, ~ effort, data)
+#' # predict(fit, terms = "elev")
+#' # predict(fit, terms = "elev [0:100 by=10]")
+#' # predict(fit, terms = c("elev", "forest"))
+#' # predict(fit, terms = "effort", process = "detection")
+#' }
+#'
 #' @export
 predict.occu_inla <- function(object, X.0 = NULL, X.p.0 = NULL,
                               coords.0 = NULL,
                               ignore.RE = FALSE,
                               type = c("both", "occupancy", "detection"),
                               quantiles = c(0.025, 0.5, 0.975),
-                              n.samples = 500, ...) {
+                              n.samples = 500,
+                              terms = NULL,
+                              process = c("occupancy", "detection"),
+                              n_points = 50L, ...) {
+  # --- terms-based prediction (ggpredict-style) ---
+  if (!is.null(terms)) {
+    process <- match.arg(process)
+    return(predict_terms(object, terms, process, n_points, quantiles))
+  }
+
   type <- match.arg(type)
   check_inla()
 
@@ -422,4 +460,246 @@ predict.occu_inla_jsdm <- function(object, ...) {
     }
   }
   results
+}
+
+
+# =============================================================================
+# Terms-based prediction (ggpredict-style)
+# =============================================================================
+
+#' @noRd
+parse_term <- function(term_str) {
+  term_str <- trimws(term_str)
+  bracket_pos <- regexpr("\\[", term_str)
+  if (bracket_pos == -1L) {
+    return(list(name = term_str, spec = NULL))
+  }
+
+  name <- trimws(substr(term_str, 1L, bracket_pos - 1L))
+  content <- trimws(sub(".*\\[(.*)\\].*", "\\1", term_str))
+
+  # Range: "0:100" or "0:100 by=5" or "-1:1"
+  if (grepl("^-?[0-9.]+\\s*:\\s*-?[0-9.]+", content)) {
+    by_val <- NULL
+    range_str <- content
+    by_match <- regexpr("by\\s*=\\s*[0-9.]+", content)
+    if (by_match > 0L) {
+      by_str <- regmatches(content, by_match)
+      by_val <- as.numeric(sub("by\\s*=\\s*", "", by_str))
+      range_str <- trimws(sub("by\\s*=\\s*[0-9.]+", "", content))
+    }
+    parts <- strsplit(range_str, "\\s*:\\s*")[[1]]
+    return(list(name = name, spec = list(
+      type = "range", from = as.numeric(parts[1]), to = as.numeric(parts[2]),
+      by = by_val
+    )))
+  }
+
+  # Comma-separated values or factor levels
+  vals <- trimws(strsplit(content, ",")[[1]])
+  nums <- suppressWarnings(as.numeric(vals))
+  if (!any(is.na(nums))) {
+    return(list(name = name, spec = list(type = "values", values = nums)))
+  }
+  list(name = name, spec = list(type = "levels", levels = vals))
+}
+
+#' @noRd
+resolve_term_values <- function(parsed, cov_vec, n_points = 50L) {
+  if (is.null(parsed$spec)) {
+    if (is.factor(cov_vec) || is.character(cov_vec)) {
+      return(if (is.factor(cov_vec)) levels(cov_vec) else sort(unique(cov_vec)))
+    }
+    return(seq(min(cov_vec, na.rm = TRUE), max(cov_vec, na.rm = TRUE),
+               length.out = n_points))
+  }
+  spec <- parsed$spec
+  if (spec$type == "range") {
+    if (!is.null(spec$by)) return(seq(spec$from, spec$to, by = spec$by))
+    return(seq(spec$from, spec$to, length.out = n_points))
+  }
+  if (spec$type == "values") return(spec$values)
+  spec$levels
+}
+
+#' @noRd
+predict_terms <- function(object, terms, process, n_points, quantiles) {
+  if (process == "occupancy") {
+    fit  <- object$occ_fit
+    covs <- object$data$occ.covs
+    fml  <- object$occ_fixed_formula %||% object$occ.formula
+  } else {
+    fit  <- object$det_fit
+    covs <- if (!is.null(object$det_df)) {
+      object$det_df
+    } else if (!is.null(object$data$det.covs)) {
+      # Flatten det.covs list to data.frame
+      as.data.frame(lapply(object$data$det.covs, function(m) {
+        if (is.matrix(m)) as.vector(m) else m
+      }))
+    } else {
+      data.frame(.intercept = 1)
+    }
+    fml <- object$det_fixed_formula %||% object$det.formula
+  }
+
+  if (is.null(fit)) stop("No fitted model for process '", process, "'")
+
+  fixed <- fit$summary.fixed
+  coef_names <- rownames(fixed)
+
+  # Parse each term
+  parsed <- lapply(terms, parse_term)
+  term_names <- vapply(parsed, `[[`, character(1), "name")
+
+  # Check all terms exist in covariates
+  for (nm in term_names) {
+    if (is.null(covs[[nm]])) {
+      stop(sprintf("Term '%s' not found in %s covariates. Available: %s",
+                   nm, process, paste(names(covs), collapse = ", ")))
+    }
+  }
+
+  # Resolve values for each term
+  term_values <- lapply(seq_along(parsed), function(i) {
+    resolve_term_values(parsed[[i]], covs[[term_names[i]]], n_points)
+  })
+  names(term_values) <- term_names
+
+  # Build prediction grid
+  grid <- expand.grid(term_values, stringsAsFactors = TRUE)
+  names(grid) <- term_names
+
+  # Fill non-varied covariates at mean (numeric) or mode (factor/character)
+  pred_data <- as.data.frame(grid)
+  for (nm in names(covs)) {
+    if (nm %in% term_names) next
+    cv <- covs[[nm]]
+    if (is.factor(cv) || is.character(cv)) {
+      tab <- table(cv)
+      mode_val <- names(tab)[which.max(tab)]
+      pred_data[[nm]] <- if (is.factor(cv)) {
+        factor(mode_val, levels = levels(cv))
+      } else {
+        mode_val
+      }
+    } else {
+      pred_data[[nm]] <- mean(cv, na.rm = TRUE)
+    }
+  }
+
+  # Build design matrix using the fixed-effects formula
+  # Strip RE terms if present (parse_re_formula already did this for occ_fixed_formula)
+  X <- tryCatch(
+    model.matrix(fml, data = pred_data),
+    error = function(e) {
+      # Fallback: build manually from coefficient names
+      X_manual <- matrix(0, nrow(pred_data), length(coef_names))
+      colnames(X_manual) <- coef_names
+      X_manual[, 1] <- 1  # intercept
+      for (nm in term_names) {
+        if (nm %in% coef_names) X_manual[, nm] <- pred_data[[nm]]
+      }
+      X_manual
+    }
+  )
+
+  if (ncol(X) != length(coef_names)) {
+    stop(sprintf(
+      "Design matrix has %d columns but model has %d coefficients (%s)",
+      ncol(X), length(coef_names), paste(coef_names, collapse = ", ")
+    ))
+  }
+
+  # Predict on link scale (logit), then transform
+  eta <- as.vector(X %*% fixed$mean)
+  # Delta-method variance: diag(X V X') where V = diag(sd^2)
+  eta_var <- rowSums((X %*% diag(fixed$sd^2, nrow = length(coef_names))) * X)
+  eta_sd <- sqrt(pmax(eta_var, 0))
+
+  z_lo <- qnorm(quantiles[1])
+  z_hi <- qnorm(quantiles[length(quantiles)])
+
+  result <- data.frame(
+    x        = grid[[1]],
+    estimate = expit(eta),
+    lower    = expit(eta + z_lo * eta_sd),
+    upper    = expit(eta + z_hi * eta_sd)
+  )
+
+  if (length(term_names) >= 2L) result$group <- grid[[2]]
+  if (length(term_names) >= 3L) result$facet <- grid[[3]]
+
+  attr(result, "terms")   <- term_names
+  attr(result, "process") <- process
+  class(result) <- c("occu_prediction", "data.frame")
+  result
+}
+
+
+#' Plot predicted effects from an occupancy model
+#'
+#' @param x an \code{occu_prediction} object from
+#'   \code{predict(fit, terms = ...)}
+#' @param ... additional arguments passed to \code{\link[graphics]{plot}}
+#'
+#' @return The input object, invisibly. Called for side effect of producing
+#'   a plot.
+#' @export
+plot.occu_prediction <- function(x, ...) {
+  terms   <- attr(x, "terms")
+  process <- attr(x, "process")
+  x_label <- terms[1]
+  y_label <- if (process == "occupancy") {
+    "Occupancy probability"
+  } else {
+    "Detection probability"
+  }
+
+  has_group <- "group" %in% names(x)
+  x_is_factor <- is.factor(x$x) || is.character(x$x)
+
+  if (!has_group && !x_is_factor) {
+    # Continuous ribbon plot
+    plot(x$x, x$estimate, type = "l", lwd = 2,
+         xlab = x_label, ylab = y_label, ylim = c(0, 1), ...)
+    polygon(c(x$x, rev(x$x)), c(x$lower, rev(x$upper)),
+            col = rgb(0, 0, 0, 0.15), border = NA)
+    lines(x$x, x$estimate, lwd = 2)
+  } else if (!has_group && x_is_factor) {
+    # Factor: point + error bar
+    lvls <- if (is.factor(x$x)) levels(x$x) else unique(x$x)
+    idx <- seq_along(lvls)
+    plot(idx, x$estimate, pch = 19, xlim = c(0.5, length(lvls) + 0.5),
+         ylim = c(0, 1), xaxt = "n", xlab = x_label, ylab = y_label, ...)
+    axis(1, at = idx, labels = lvls)
+    arrows(idx, x$lower, idx, x$upper, angle = 90, code = 3, length = 0.05)
+  } else {
+    # Grouped: one line per group
+    groups <- unique(x$group)
+    n_groups <- length(groups)
+    cols <- hcl.colors(n_groups, palette = "Dark 2")
+
+    plot(range(x$x, na.rm = TRUE), c(0, 1), type = "n",
+         xlab = x_label, ylab = y_label, ...)
+
+    for (i in seq_along(groups)) {
+      sel <- x$group == groups[i]
+      xi <- x$x[sel]
+      ord <- order(xi)
+      xi <- xi[ord]
+      est_i <- x$estimate[sel][ord]
+      lo_i  <- x$lower[sel][ord]
+      hi_i  <- x$upper[sel][ord]
+
+      polygon(c(xi, rev(xi)), c(lo_i, rev(hi_i)),
+              col = adjustcolor(cols[i], alpha.f = 0.15), border = NA)
+      lines(xi, est_i, lwd = 2, col = cols[i])
+    }
+
+    legend("topright", legend = as.character(groups),
+           col = cols, lwd = 2, title = terms[2], bty = "n")
+  }
+
+  invisible(x)
 }

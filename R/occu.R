@@ -154,6 +154,8 @@ occu <- function(occ.formula, det.formula = NULL, data,
   result$call       <- match.call()
   result$model_type <- model_key
   result$run_time   <- proc.time() - t0
+  result$occ_fixed_formula <- occ_parsed$fixed
+  result$det_fixed_formula <- if (!is.null(det_parsed)) det_parsed$fixed else NULL
   class(result) <- spec$class
   result
 }
