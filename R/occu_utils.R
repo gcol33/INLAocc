@@ -257,6 +257,9 @@ bar_to_occu_re <- function(bar_term) {
   lhs <- bar_term[[2]]
   rhs <- bar_term[[3]]
 
+  # Detect || (double bar) → uncorrelated random effects
+  correlated <- !identical(bar_term[[1]], as.name("||"))
+
   # Resolve grouping variable
   if (is.call(rhs) && identical(rhs[[1]], as.name("/"))) {
     # Nested grouping: (1 | a/b) → group = "a:b"
@@ -286,11 +289,13 @@ bar_to_occu_re <- function(bar_term) {
   # Emit occu_re objects
   re_list <- list()
   if (has_intercept) {
-    re_list[[length(re_list) + 1L]] <- occu_re("intercept", group = group_var)
+    re_list[[length(re_list) + 1L]] <- occu_re("intercept", group = group_var,
+                                                 correlated = correlated)
   }
   for (s in slopes) {
     re_list[[length(re_list) + 1L]] <- occu_re("slope", group = group_var,
-                                                 covariate = deparse(s))
+                                                 covariate = deparse(s),
+                                                 correlated = correlated)
   }
   re_list
 }

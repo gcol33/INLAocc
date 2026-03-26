@@ -25,6 +25,9 @@ validate_re_args <- function(type, covariate, prior, label = "Random") {
 #' @param model INLA model for the random effect ("iid", "ar1", "rw1", "rw2", "besag")
 #' @param prior list with prior specification (passed to INLA hyper)
 #' @param constr logical: sum-to-zero constraint
+#' @param correlated logical: whether this RE is correlated with other REs sharing
+#'   the same grouping factor. Set to \code{FALSE} when parsed from lme4 \code{||}
+#'   (double-bar) syntax, indicating uncorrelated random effects.
 #' @param n_groups optional: number of groups (auto-detected if NULL)
 #'
 #' @return object of class \code{"occu_re"}
@@ -35,19 +38,21 @@ occu_re <- function(type = c("intercept", "slope", "iid"),
                     model = "iid",
                     prior = NULL,
                     constr = FALSE,
+                    correlated = TRUE,
                     n_groups = NULL) {
 
   type <- match.arg(type)
   prior <- validate_re_args(type, covariate, prior)
 
   out <- list(
-    type      = type,
-    group     = group,
-    covariate = covariate,
-    model     = model,
-    prior     = prior,
-    constr    = constr,
-    n_groups  = n_groups
+    type       = type,
+    group      = group,
+    covariate  = covariate,
+    model      = model,
+    prior      = prior,
+    constr     = constr,
+    correlated = correlated,
+    n_groups   = n_groups
   )
   class(out) <- "occu_re"
   out
