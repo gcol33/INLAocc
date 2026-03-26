@@ -161,7 +161,22 @@ summary(fit)
 ```r
 sim <- simulate_occu(N = 200, J = 4, spatial_range = 0.2, seed = 123)
 
+# Auto-scaled mesh from coordinate extent
 fit <- occu(~ occ_x1, ~ det_x1, data = sim$data, spatial = sim$data$coords)
+
+# Control mesh resolution (units match your CRS — metres for UTM)
+fit <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+            spatial = sim$data$coords,
+            spde.args = list(max.edge = c(5000, 15000)))
+
+# Or build the spatial object explicitly
+sp <- occu_spatial(coords,
+                   max.edge = c(5000, 15000),    # triangle edges in CRS units
+                   cutoff = 1000,                 # min distance between nodes
+                   prior.range = c(20000, 0.5),   # P(range < 20km) = 0.5
+                   prior.sigma = c(1, 0.5))       # P(sigma > 1) = 0.5
+fit <- occu(~ occ_x1, ~ det_x1, data = sim$data, spatial = sp)
+
 moranI(fit)  # check residual spatial autocorrelation
 ```
 
