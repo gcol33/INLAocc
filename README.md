@@ -6,7 +6,7 @@
 
 # INLAocc
 
-**Occupancy models via Integrated Nested Laplace Approximation.**
+**Occupancy models via INLA — a fast alternative to MCMC.**
 
 Fit single-species, multi-species, spatial, temporal, and integrated occupancy models through one function. INLAocc uses an EM algorithm with INLA at each M-step, giving fast and accurate estimates of species occurrence while accounting for imperfect detection.
 
