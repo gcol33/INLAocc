@@ -997,3 +997,225 @@ dharma <- function(object, nsim = 250L, seed = 123L, ...) {
     ...
   )
 }
+
+
+# =============================================================================
+# Simulation-based diagnostic tests (native DHARMa equivalents)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+#  pitResiduals  —  probability integral transform residuals
+# ---------------------------------------------------------------------------
+
+#' Compute PIT (scaled) residuals for an occupancy model
+#'
+#' For each site, computes the quantile of the observed detection count
+#' within the posterior predictive distribution from \code{\link{simulate}}.
+#' If the model is correct, these residuals are Uniform(0, 1).
+#'
+#' For integer-valued responses, a randomisation step avoids discrete
+#' artefacts: the residual is drawn uniformly between
+#' P(sim < obs) and P(sim <= obs).
+#'
+#' @param object fitted \code{occu_inla} object
+#' @param nsim number of simulations (default 250)
+#' @param seed random seed (default 123)
+#'
+#' @return A numeric vector of length N with values between 0 and 1.
+#' @export
+pitResiduals <- function(object, nsim = 250L, seed = 123L) {
+  sims <- simulate(object, nsim = nsim, seed = seed, level = "site")
+  obs  <- rowSums(object$data$y, na.rm = TRUE)
+  N    <- length(obs)
+
+  # P(sim < obs) and P(sim <= obs) per site
+  lower <- rowMeans(sims < obs)
+  upper <- rowMeans(sims <= obs)
+
+  # Randomise between lower and upper for integer data
+  set.seed(seed + 1L)
+  lower + runif(N) * (upper - lower)
+}
+
+
+# ---------------------------------------------------------------------------
+#  testUniformity  —  KS test on PIT residuals
+# ---------------------------------------------------------------------------
+
+#' Test uniformity of PIT residuals (KS test)
+#'
+#' If the model is correct, PIT residuals should follow Uniform(0, 1).
+#' This test applies a Kolmogorov-Smirnov test against that null.
+#' Native equivalent of \code{DHARMa::testUniformity()}.
+#'
+#' @param object fitted \code{occu_inla} object, or a numeric vector of
+#'   PIT residuals (from \code{\link{pitResiduals}})
+#' @param nsim number of simulations if \code{object} is a fit (default 250)
+#' @param seed random seed (default 123)
+#' @param plot if \code{TRUE}, draws a QQ plot of residuals vs Uniform
+#'
+#' @return A list of class \code{"htest"} (KS test result).
+#' @export
+testUniformity <- function(object, nsim = 250L, seed = 123L, plot = FALSE) {
+  if (inherits(object, "occu_em")) {
+    r <- pitResiduals(object, nsim = nsim, seed = seed)
+  } else if (is.numeric(object)) {
+    r <- object
+  } else {
+    stop("object must be an occu_inla fit or a numeric vector of PIT residuals")
+  }
+
+  # Suppress ties warning — expected for integer data even after PIT randomisation
+  result <- suppressWarnings(ks.test(r, "punif"))
+
+  if (plot) {
+    n <- length(r)
+    expected <- (seq_len(n) - 0.5) / n
+    plot(sort(r), expected,
+         xlab = "Observed PIT residuals", ylab = "Expected Uniform",
+         main = sprintf("QQ Uniform (KS p = %.3f)", result$p.value),
+         pch = 19, cex = 0.6)
+    abline(0, 1, col = "red", lty = 2)
+  }
+
+  result
+}
+
+
+# ---------------------------------------------------------------------------
+#  testDispersion  —  over/underdispersion
+# ---------------------------------------------------------------------------
+
+#' Test for over- or underdispersion
+#'
+#' Compares the variance of observed site-level detection counts to the
+#' variance expected under the fitted model (via simulation).  A ratio > 1
+#' indicates overdispersion; < 1 indicates underdispersion.
+#' Native equivalent of \code{DHARMa::testDispersion()}.
+#'
+#' @param object fitted \code{occu_inla} object
+#' @param nsim number of simulations (default 250)
+#' @param seed random seed (default 123)
+#' @param alternative \code{"two.sided"} (default), \code{"greater"}
+#'   (overdispersion), or \code{"less"} (underdispersion)
+#'
+#' @return A list of class \code{"htest"} with the dispersion ratio and
+#'   simulation-based p-value.
+#' @export
+testDispersion <- function(object, nsim = 250L, seed = 123L,
+                            alternative = c("two.sided", "greater", "less")) {
+  alternative <- match.arg(alternative)
+
+  sims <- simulate(object, nsim = nsim, seed = seed, level = "site")
+  obs  <- rowSums(object$data$y, na.rm = TRUE)
+
+  var_obs <- var(obs)
+  var_sim <- apply(sims, 2, var)
+  ratio   <- var_obs / median(var_sim)
+
+  # Simulation-based p-value
+  p_greater <- mean(var_sim >= var_obs)
+  p_less    <- mean(var_sim <= var_obs)
+  p_val <- switch(alternative,
+    two.sided = 2 * min(p_greater, p_less),
+    greater   = p_greater,
+    less      = p_less
+  )
+  p_val <- min(p_val, 1)
+
+  structure(
+    list(
+      statistic   = c("dispersion ratio" = ratio),
+      p.value     = p_val,
+      alternative = alternative,
+      method      = "Simulation-based dispersion test",
+      data.name   = deparse(substitute(object))
+    ),
+    class = "htest"
+  )
+}
+
+
+# ---------------------------------------------------------------------------
+#  testOutliers  —  observations outside simulation envelope
+# ---------------------------------------------------------------------------
+
+#' Test for outliers (simulation envelope)
+#'
+#' Counts how many sites have observed detection counts outside the
+#' min-to-max range of all simulations.  Under a correct model, the
+#' expected number of such outliers is approximately
+#' \code{2 * N * (1 / (nsim + 1))}.  A binomial test assesses whether
+#' more outliers than expected are present.
+#' Native equivalent of \code{DHARMa::testOutliers()}.
+#'
+#' @param object fitted \code{occu_inla} object
+#' @param nsim number of simulations (default 250)
+#' @param seed random seed (default 123)
+#'
+#' @return A list of class \code{"htest"} (binomial test result).
+#' @export
+testOutliers <- function(object, nsim = 250L, seed = 123L) {
+  sims <- simulate(object, nsim = nsim, seed = seed, level = "site")
+  obs  <- rowSums(object$data$y, na.rm = TRUE)
+  N    <- length(obs)
+
+  sim_min <- apply(sims, 1, min)
+  sim_max <- apply(sims, 1, max)
+  n_outliers <- sum(obs < sim_min | obs > sim_max)
+
+  # Expected outlier probability under correct model
+  p_expected <- 2 / (nsim + 1)
+
+  result <- binom.test(n_outliers, N, p = p_expected,
+                       alternative = "greater")
+  result$method <- sprintf(
+    "Simulation outlier test (%d/%d sites outside envelope)", n_outliers, N
+  )
+  result
+}
+
+
+# ---------------------------------------------------------------------------
+#  testZeroInflation  —  excess zeros
+# ---------------------------------------------------------------------------
+
+#' Test for zero-inflation
+#'
+#' Compares the number of all-zero sites (no detections) in the observed
+#' data to the distribution expected under the fitted model.
+#' Native equivalent of \code{DHARMa::testZeroInflation()}.
+#'
+#' @param object fitted \code{occu_inla} object
+#' @param nsim number of simulations (default 250)
+#' @param seed random seed (default 123)
+#'
+#' @return A list of class \code{"htest"} with the zero-inflation ratio
+#'   and simulation-based p-value.
+#' @export
+testZeroInflation <- function(object, nsim = 250L, seed = 123L) {
+  sims <- simulate(object, nsim = nsim, seed = seed, level = "site")
+  obs  <- rowSums(object$data$y, na.rm = TRUE)
+
+  n_zero_obs <- sum(obs == 0)
+  n_zero_sim <- colSums(sims == 0)
+  ratio <- n_zero_obs / max(median(n_zero_sim), 1)
+
+  # Two-sided simulation p-value
+  p_greater <- mean(n_zero_sim >= n_zero_obs)
+  p_less    <- mean(n_zero_sim <= n_zero_obs)
+  p_val     <- min(2 * min(p_greater, p_less), 1)
+
+  structure(
+    list(
+      statistic   = c("zero-inflation ratio" = ratio),
+      parameter   = c("observed zeros" = n_zero_obs,
+                       "expected zeros" = median(n_zero_sim)),
+      p.value     = p_val,
+      alternative = "two.sided",
+      method      = "Simulation-based zero-inflation test",
+      data.name   = deparse(substitute(object))
+    ),
+    class = "htest"
+  )
+}
