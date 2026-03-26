@@ -296,6 +296,159 @@ print.occu_data <- function(x, ...) {
 }
 
 
+#' Summary statistics for occupancy detection histories
+#'
+#' Computes descriptive statistics for the detection matrix before model
+#' fitting: detection frequencies, visit completeness, per-visit detection
+#' rates, and spatial patterns (if coordinates are available).
+#'
+#' @param object an \code{occu_data} object or a raw data list with
+#'   component \code{y}
+#' @param ... ignored
+#'
+#' @return A list of class \code{"occu_data_summary"} with:
+#'   \describe{
+#'     \item{N}{number of sites}
+#'     \item{J}{max visits per site}
+#'     \item{n_obs}{total non-NA observations}
+#'     \item{n_missing}{total NAs in detection matrix}
+#'     \item{naive_psi}{proportion of sites with at least one detection}
+#'     \item{naive_p}{detection rate conditional on occupied sites}
+#'     \item{det_freq}{table of detection counts per site (0, 1, 2, ...)}
+#'     \item{visit_rate}{proportion of non-NA cells per visit column}
+#'     \item{det_per_visit}{detection rate per visit column}
+#'     \item{has_coords}{logical}
+#'   }
+#' @export
+summary.occu_data <- function(object, ...) {
+  y <- object$y
+  N <- nrow(y)
+  J <- ncol(y)
+
+  not_na <- !is.na(y)
+  n_obs <- sum(not_na)
+  n_missing <- sum(is.na(y))
+
+  # Per-site detection count
+  det_count <- rowSums(y == 1, na.rm = TRUE)
+  n_visits  <- rowSums(not_na)
+  detected  <- det_count > 0
+
+  naive_psi <- mean(detected)
+  naive_p   <- if (sum(n_visits[detected]) > 0) {
+    sum(det_count[detected]) / sum(n_visits[detected])
+  } else NA_real_
+
+  # Detection frequency table
+  det_freq <- table(factor(det_count, levels = 0:J))
+
+  # Per-visit stats
+  visit_rate    <- colMeans(not_na)
+  det_per_visit <- colMeans(y == 1, na.rm = TRUE)
+
+  out <- list(
+    N             = N,
+    J             = J,
+    n_obs         = n_obs,
+    n_missing     = n_missing,
+    naive_psi     = naive_psi,
+    naive_p       = naive_p,
+    det_freq      = det_freq,
+    det_count     = det_count,
+    n_visits      = n_visits,
+    visit_rate    = visit_rate,
+    det_per_visit = det_per_visit,
+    has_coords    = !is.null(object$coords)
+  )
+  class(out) <- "occu_data_summary"
+  out
+}
+
+
+#' @export
+print.occu_data_summary <- function(x, ...) {
+  cat("Occupancy data summary\n")
+  cat(sprintf("  Sites: %d | Max visits: %d\n", x$N, x$J))
+  cat(sprintf("  Observations: %d | Missing: %d (%.1f%%)\n",
+              x$n_obs, x$n_missing,
+              100 * x$n_missing / (x$n_obs + x$n_missing)))
+  cat(sprintf("  Naive occupancy: %.3f (%d / %d sites)\n",
+              x$naive_psi, sum(x$det_freq[-1]), x$N))
+  if (!is.na(x$naive_p)) {
+    cat(sprintf("  Naive detection: %.3f\n", x$naive_p))
+  }
+  cat("\n  Detection frequency (detections per site):\n")
+  df <- as.data.frame(x$det_freq)
+  names(df) <- c("detections", "sites")
+  print(df, row.names = FALSE)
+  cat(sprintf("\n  Per-visit detection rate: %s\n",
+              paste(sprintf("V%d=%.2f", seq_along(x$det_per_visit),
+                            x$det_per_visit), collapse = "  ")))
+  if (x$has_coords) cat("  Coordinates: available\n")
+  invisible(x)
+}
+
+
+#' Plot detection history patterns
+#'
+#' Produces a 2x2 panel: detection frequency histogram, per-visit detection
+#' rates, visit completeness, and a spatial detection map (if coordinates
+#' are available).
+#'
+#' @param x an \code{occu_data} object
+#' @param ... ignored
+#'
+#' @return Invisible \code{NULL}.
+#' @export
+plot.occu_data <- function(x, ...) {
+  y <- x$y
+  N <- nrow(y)
+  J <- ncol(y)
+
+  det_count <- rowSums(y == 1, na.rm = TRUE)
+  n_visits  <- rowSums(!is.na(y))
+  detected  <- det_count > 0
+
+  has_coords <- !is.null(x$coords)
+  old_par <- par(mfrow = if (has_coords) c(2, 2) else c(1, 3),
+                 mar = c(4, 4, 2.5, 1))
+  on.exit(par(old_par))
+
+  # Panel 1: detection frequency histogram
+  hist(det_count, breaks = seq(-0.5, max(det_count) + 0.5, by = 1),
+       main = "Detections per site", xlab = "Number of detections",
+       col = "grey80", border = "grey50")
+
+  # Panel 2: per-visit detection rate
+  det_per_visit <- colMeans(y == 1, na.rm = TRUE)
+  barplot(det_per_visit, names.arg = paste0("V", seq_len(J)),
+          main = "Detection rate by visit",
+          ylab = "P(detect)", col = "steelblue", ylim = c(0, max(det_per_visit) * 1.2))
+
+  # Panel 3: visit completeness
+  completeness <- colMeans(!is.na(y))
+  barplot(completeness, names.arg = paste0("V", seq_len(J)),
+          main = "Visit completeness",
+          ylab = "Proportion surveyed", col = "darkseagreen",
+          ylim = c(0, 1))
+
+  # Panel 4: spatial map (if coords)
+  if (has_coords) {
+    cols <- ifelse(detected, "tomato", "grey70")
+    plot(x$coords[, 1], x$coords[, 2],
+         col = cols, pch = 19,
+         cex = 0.5 + det_count / max(max(det_count), 1),
+         xlab = "X", ylab = "Y",
+         main = "Detection map")
+    legend("topright",
+           legend = c("Detected", "Not detected"),
+           col = c("tomato", "grey70"), pch = 19, cex = 0.8)
+  }
+
+  invisible(NULL)
+}
+
+
 #' Create multi-species occupancy data
 #'
 #' @param y_list named list of N x J detection matrices (one per species)
