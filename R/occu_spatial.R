@@ -100,6 +100,100 @@ print.occu_spatial <- function(x, ...) {
 }
 
 
+#' Create an areal spatial effect for occupancy models (CAR/BYM2)
+#'
+#' For data on grids, administrative units, or any areal structure. Uses
+#' INLA's \code{besag} or \code{bym2} model with an adjacency graph.
+#'
+#' @param adj Adjacency structure: a symmetric matrix, a \code{nb} object
+#'   (from \code{spdep}), or a path to an INLA graph file.
+#' @param model \code{"bym2"} (default, recommended) or \code{"besag"}.
+#'   BYM2 separates structured (spatial) and unstructured (iid) components
+#'   with a mixing parameter.
+#' @param prior.sigma numeric(2): PC prior on marginal SD. c(s0, p) means
+#'   P(sigma > s0) = p. Default c(1, 0.05).
+#' @param scale.model Logical: scale the precision matrix so the generalized
+#'   variance is 1 (recommended for bym2). Default TRUE.
+#'
+#' @return object of class \code{"occu_areal"} with graph and model components
+#' @export
+occu_areal <- function(adj,
+                        model = c("bym2", "besag"),
+                        prior.sigma = c(1, 0.05),
+                        scale.model = TRUE) {
+  check_inla()
+  model <- match.arg(model)
+
+  # Convert adjacency input to INLA graph
+  if (is.character(adj) && file.exists(adj)) {
+    # Path to INLA graph file
+    graph <- adj
+    # Read to determine N
+    g <- INLA::inla.read.graph(adj)
+    N <- g$n
+  } else if (is.matrix(adj)) {
+    # Adjacency matrix → INLA graph via temp file
+    if (nrow(adj) != ncol(adj))
+      stop("Adjacency matrix must be square")
+    if (!isSymmetric(adj))
+      stop("Adjacency matrix must be symmetric")
+    N <- nrow(adj)
+    graph_file <- tempfile(fileext = ".graph")
+    # Write INLA graph format
+    lines <- character(N + 1)
+    lines[1] <- as.character(N)
+    for (i in seq_len(N)) {
+      neighbors <- which(adj[i, ] > 0 & seq_len(N) != i)
+      lines[i + 1] <- paste(c(i, length(neighbors), neighbors), collapse = " ")
+    }
+    writeLines(lines, graph_file)
+    graph <- graph_file
+  } else if (inherits(adj, "nb")) {
+    # spdep nb object → INLA graph
+    graph_file <- tempfile(fileext = ".graph")
+    N <- length(adj)
+    lines <- character(N + 1)
+    lines[1] <- as.character(N)
+    for (i in seq_len(N)) {
+      nb_i <- adj[[i]]
+      nb_i <- nb_i[nb_i > 0]  # remove 0 (no-neighbor indicator)
+      lines[i + 1] <- paste(c(i, length(nb_i), nb_i), collapse = " ")
+    }
+    writeLines(lines, graph_file)
+    graph <- graph_file
+  } else {
+    stop("adj must be an adjacency matrix, an spdep 'nb' object, or a path to an INLA graph file")
+  }
+
+  # Build INLA model
+  hyper <- list(
+    prec = list(prior = "pc.prec", param = prior.sigma)
+  )
+
+  out <- list(
+    graph       = graph,
+    model       = model,
+    n_regions   = N,
+    hyper       = hyper,
+    scale.model = scale.model,
+    prior.sigma = prior.sigma,
+    type        = "areal"
+  )
+  class(out) <- "occu_areal"
+  out
+}
+
+
+#' @export
+print.occu_areal <- function(x, ...) {
+  cat(sprintf("Areal spatial component (occu_areal, %s)\n", x$model))
+  cat(sprintf("  Regions: %d\n", x$n_regions))
+  cat(sprintf("  PC prior sigma: P(sigma > %.2f) = %.2f\n",
+              x$prior.sigma[1], x$prior.sigma[2]))
+  invisible(x)
+}
+
+
 #' @noRd
 build_spatial_stack <- function(df, spatial, site_col = "site",
                                 tag = "occ_spatial") {

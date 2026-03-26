@@ -1,0 +1,13 @@
+"scenario","N","spatial","t_spOcc","t_INLAocc","speedup","cor_spOcc","cor_INLAocc","rmse_spOcc","rmse_INLAocc"
+"small_basic",100,FALSE,0.7,5.2,0.1,0.991,0.966,0.1048,0.1657
+"small_2cov",100,FALSE,0.7,5.9,0.1,0.996,0.988,0.0394,0.0949
+"medium_basic",500,FALSE,3.7,5.8,0.6,1,0.991,0.0537,0.1448
+"medium_2cov",500,FALSE,3.6,6.2,0.6,0.998,0.98,0.0342,0.1453
+"medium_6visit",500,FALSE,4.8,4.5,1.1,0.999,0.989,0.0233,0.0911
+"large_basic",2000,FALSE,13.9,7,2,1,0.982,0.0151,0.1331
+"large_2cov",2000,FALSE,14,6.5,2.2,1,0.979,0.014,0.1387
+"xlarge_basic",5000,FALSE,35.1,6.7,5.2,1,0.986,0.0062,0.1294
+"spatial_small",200,TRUE,4.9,4.2,1.2,0.729,0.707,0.1591,0.1967
+"spatial_medium",500,TRUE,13.2,5.1,2.6,0.866,0.814,0.1281,0.2227
+"spatial_large",1000,TRUE,27.2,5.8,4.7,0.855,0.827,0.1177,0.221
+"spatial_xlarge",2000,TRUE,60.7,7.8,7.8,0.895,0.847,0.1035,0.1927

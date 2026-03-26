@@ -36,7 +36,7 @@ resolve_model_type <- function(spatial, temporal, multispecies,
     if (is_integrated) "_int" else "",
     if (is_spatial)    "_sp"  else "",
     if (is_temporal)   "_t"   else "",
-    if (is_lf && !is_jsdm) "_lf" else "",
+    if (is_lf) "_lf" else "",
     if (is_svc)        "_svc" else ""
   )
   key
@@ -76,11 +76,12 @@ MODEL_REGISTRY <- list(
 prepare_spatial <- function(spatial, spde.args) {
   if (is.null(spatial)) return(NULL)
   if (inherits(spatial, "occu_spatial")) return(spatial)
+  if (inherits(spatial, "occu_areal")) return(spatial)
   # Treat as coordinate matrix
   if (is.matrix(spatial) || is.data.frame(spatial)) {
     return(do.call(occu_spatial, c(list(coords = as.matrix(spatial)), spde.args)))
   }
-  stop("spatial must be an N x 2 coordinate matrix or an occu_spatial() object")
+  stop("spatial must be an N x 2 coordinate matrix, an occu_spatial(), or an occu_areal() object")
 }
 
 
@@ -91,6 +92,9 @@ prepare_data <- function(data, multispecies, integrated, temporal) {
   if (is_jsdm) return(data)
 
   if (isTRUE(multispecies)) {
+    # Multi-species + temporal: 4D array (species x sites x seasons x visits)
+    # Pass through directly — engine_ms_temporal handles the 4D structure
+    if (!is.null(temporal)) return(data)
     if (inherits(data, "occu_data_ms")) return(data)
     y_input <- data$y
     if (is.array(y_input) && length(dim(y_input)) == 3) {

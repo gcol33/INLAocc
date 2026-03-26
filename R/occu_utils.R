@@ -19,53 +19,48 @@ clamp <- function(x, lo = 1e-8, hi = 1 - 1e-8) {
 
 #' @noRd
 occu_loglik <- function(y, psi, p) {
-  N <- nrow(y)
-  J <- ncol(y)
-  ll <- 0
+  p_c <- clamp(p)
+  psi_c <- clamp(psi)
 
-  for (i in seq_len(N)) {
-    visits <- which(!is.na(y[i, ]))
-    if (length(visits) == 0) next
+  detected <- rowSums(y == 1, na.rm = TRUE) > 0
+  valid <- !is.na(y)
 
-    yi <- y[i, visits]
-    pi <- p[i, visits]
-    detected <- any(yi == 1)
+  # Detection log-likelihood per cell (0 where NA)
+  ll_cell <- ifelse(valid,
+                    y * log(p_c) + (1 - y) * log(1 - p_c),
+                    0)
 
-    if (detected) {
-      # z_i = 1 certain
-      ll_det <- sum(yi * log(clamp(pi)) + (1 - yi) * log(clamp(1 - pi)))
-      ll <- ll + log(clamp(psi[i])) + ll_det
-    } else {
-      # z_i unknown: marginalize
-      q_i <- prod(clamp(1 - pi))
-      ll <- ll + log(clamp((1 - psi[i]) + psi[i] * q_i))
-    }
-  }
-  ll
+  # Detected sites: log(psi) + sum of detection log-lik
+  ll_det <- log(psi_c[detected]) + rowSums(ll_cell[detected, , drop = FALSE])
+
+  # Undetected sites: log((1 - psi) + psi * prod(1 - p))
+  # prod(1 - p) across visits = exp(sum(log(1-p))) for non-NA cells
+  log_q <- rowSums(ifelse(valid, log(1 - p_c), 0))
+  q_vec <- exp(log_q)
+  ll_undet <- log(clamp((1 - psi_c[!detected]) + psi_c[!detected] * q_vec[!detected]))
+
+  sum(ll_det) + sum(ll_undet)
 }
 
 #' @noRd
 compute_weights <- function(y, psi, p) {
   N <- nrow(y)
-  w <- rep(1, N)
+  detected <- rowSums(y == 1, na.rm = TRUE) > 0
+  has_visits <- rowSums(!is.na(y)) > 0
 
-  for (i in seq_len(N)) {
-    visits <- which(!is.na(y[i, ]))
-    if (length(visits) == 0) {
-      w[i] <- 0.5
-      next
-    }
+  # Default: detected = 1, no visits = 0.5
+  w <- rep(0.5, N)
+  w[detected] <- 1
 
-    yi <- y[i, visits]
-    detected <- any(yi == 1)
-
-    if (!detected) {
-      pi <- p[i, visits]
-      q_i <- prod(clamp(1 - pi))  # P(all zeros | occupied)
-      psi_i <- clamp(psi[i])
-      # Bayes: P(z=1 | all zeros) = psi*q / ((1-psi) + psi*q)
-      w[i] <- (psi_i * q_i) / ((1 - psi_i) + psi_i * q_i)
-    }
+  # Undetected with visits: Bayes update
+  undet <- !detected & has_visits
+  if (any(undet)) {
+    p_c <- clamp(p)
+    # prod(1 - p) per site via log-sum, only over non-NA cells
+    log_q <- rowSums(ifelse(!is.na(y), log(1 - p_c), 0))
+    q_vec <- exp(log_q[undet])
+    psi_c <- clamp(psi[undet])
+    w[undet] <- (psi_c * q_vec) / ((1 - psi_c) + psi_c * q_vec)
   }
   w
 }
@@ -79,33 +74,29 @@ build_det_df <- function(y, det_covs = NULL, site_idx = NULL,
   if (is.null(weights)) weights <- rep(1, N)
   if (is.null(site_idx)) site_idx <- seq_len(N)
 
-  rows <- list()
-  for (i in seq_len(N)) {
-    for (j in seq_len(J)) {
-      if (is.na(y[i, j])) next
+  # Vectorized: find all non-NA (site, visit) pairs
+  valid <- which(!is.na(y), arr.ind = TRUE)
+  ri <- valid[, 1]
+  ci <- valid[, 2]
 
-      row <- list(
-        y_det    = y[i, j],
-        site     = site_idx[i],
-        visit    = j,
-        w        = weights[i]
-      )
+  df <- data.frame(
+    y_det = y[valid],
+    site  = site_idx[ri],
+    visit = ci,
+    w     = weights[ri]
+  )
 
-      if (!is.null(det_covs)) {
-        for (nm in names(det_covs)) {
-          row[[nm]] <- det_covs[[nm]][i, j]
-        }
-      }
-
-      if (!is.null(visit_idx)) {
-        row[["visit_group"]] <- visit_idx[i, j]
-      }
-
-      rows[[length(rows) + 1]] <- row
+  if (!is.null(det_covs)) {
+    for (nm in names(det_covs)) {
+      df[[nm]] <- det_covs[[nm]][valid]
     }
   }
 
-  do.call(rbind, lapply(rows, as.data.frame))
+  if (!is.null(visit_idx)) {
+    df$visit_group <- visit_idx[valid]
+  }
+
+  df
 }
 
 #' @noRd
@@ -126,81 +117,209 @@ build_occ_df <- function(occ_covs, weights, site_idx = NULL,
   df
 }
 
+#' Build weighted Bernoulli occupancy data for spatial models
+#'
+#' Uses two rows per undetected site (z=1 with weight w, z=0 with weight 1-w)
+#' instead of scaled binomial encoding. This keeps the SPDE prior properly
+#' influential relative to the data.
+#' @noRd
+build_occ_df_weighted <- function(occ_covs, weights, site_idx = NULL,
+                                   detected = NULL) {
+  N <- nrow(occ_covs)
+  if (is.null(site_idx)) site_idx <- seq_len(N)
+  if (is.null(detected)) detected <- weights == 1
+
+  n_undet <- sum(!detected)
+  n_rows <- N + n_undet
+
+  # Row indices: each site once, plus undetected sites get a second row
+  src_rows <- c(seq_len(N), which(!detected))
+
+  df <- occ_covs[src_rows, , drop = FALSE]
+  rownames(df) <- NULL
+  df$site    <- site_idx[src_rows]
+  df$Ntrials <- 1L
+
+  # z and w vectors
+  w_clamped <- clamp(weights, 1e-6, 1 - 1e-6)
+
+  z_vec <- integer(n_rows)
+  w_vec <- numeric(n_rows)
+
+  # First N rows: one per site
+  z_vec[seq_len(N)]  <- 1L           # all z=1 (detected stays 1, undetected gets w)
+  w_vec[seq_len(N)]  <- ifelse(detected, 1.0, w_clamped)
+
+  # Extra rows for undetected: z=0 with weight 1-w
+  if (n_undet > 0) {
+    extra_idx <- (N + 1L):n_rows
+    z_vec[extra_idx] <- 0L
+    w_vec[extra_idx] <- 1 - w_clamped[!detected]
+  }
+
+  df$z <- z_vec
+  df$w <- w_vec
+  df
+}
+
+# =============================================================================
+# Formula parser — native AST walker (ported from tulpa)
+#
+# R formulas are already parse trees. We do structural recursion to find
+# random effect terms (| nodes) and separate them from fixed effects.
+# No external dependencies (lme4), no regex on deparsed strings.
+# =============================================================================
+
+#' Find all bar terms in a formula's parse tree
+#'
+#' Recursively walks the formula AST and collects all `|` and `||` nodes
+#' found inside parentheses.
+#' @noRd
+findbars_ast <- function(term) {
+  if (is.name(term) || !is.language(term)) return(NULL)
+
+  # Parenthesized expression: check if it wraps a bar term
+  if (term[[1]] == as.name("(")) {
+    inner <- term[[2]]
+    if (is.call(inner) &&
+        (inner[[1]] == as.name("|") || inner[[1]] == as.name("||"))) {
+      return(list(inner))
+    }
+    return(findbars_ast(inner))
+  }
+
+  # Bar term found directly
+  if (term[[1]] == as.name("|") || term[[1]] == as.name("||")) {
+    return(list(term))
+  }
+
+  # Unary operator: recurse into operand
+  if (length(term) == 2) return(findbars_ast(term[[2]]))
+
+  # Binary operator: recurse both sides
+  c(findbars_ast(term[[2]]), findbars_ast(term[[3]]))
+}
+
+#' Remove all bar terms from a formula's parse tree
+#'
+#' Rewrites the formula AST with any `|`/`||` nodes inside parentheses removed.
+#' @noRd
+nobars_ast <- function(term) {
+  if (is.name(term) || !is.language(term)) return(term)
+
+  # Parenthesized bar term: drop entirely
+  if (term[[1]] == as.name("(")) {
+    inner <- term[[2]]
+    if (is.call(inner) &&
+        (inner[[1]] == as.name("|") || inner[[1]] == as.name("||"))) {
+      return(NULL)
+    }
+    nb <- nobars_ast(inner)
+    if (is.null(nb)) return(NULL)
+    return(call("(", nb))
+  }
+
+  # Unary operator
+  if (length(term) == 2) {
+    nb <- nobars_ast(term[[2]])
+    if (is.null(nb)) return(NULL)
+    return(call(deparse(term[[1]]), nb))
+  }
+
+  # Binary operator: recurse both sides, handle NULL removal
+  nb_left  <- nobars_ast(term[[2]])
+  nb_right <- nobars_ast(term[[3]])
+
+  if (is.null(nb_left) && is.null(nb_right)) return(NULL)
+  if (is.null(nb_left))  return(nb_right)
+  if (is.null(nb_right)) return(nb_left)
+
+  call(deparse(term[[1]]), nb_left, nb_right)
+}
+
+#' Flatten a + chain into individual terms
+#' @noRd
+collect_additive_terms <- function(expr) {
+  if (is.call(expr) && identical(expr[[1]], as.name("+"))) {
+    c(collect_additive_terms(expr[[2]]), collect_additive_terms(expr[[3]]))
+  } else {
+    list(expr)
+  }
+}
+
+#' Parse a single bar term into a list of occu_re objects
+#'
+#' Takes a `|` or `||` language object and emits one occu_re per effect term.
+#' Handles intercept indicators (0, 1, -1), nested grouping (a/b), and
+#' uncorrelated syntax (||).
+#' @noRd
+bar_to_occu_re <- function(bar_term) {
+  lhs <- bar_term[[2]]
+  rhs <- bar_term[[3]]
+
+  # Resolve grouping variable
+  if (is.call(rhs) && identical(rhs[[1]], as.name("/"))) {
+    # Nested grouping: (1 | a/b) → group = "a:b"
+    group_var <- paste0(as.character(rhs[[2]]), ":", as.character(rhs[[3]]))
+  } else {
+    group_var <- if (is.name(rhs)) as.character(rhs) else deparse(rhs)
+  }
+
+  # Decompose LHS into intercept flag + slope terms
+  terms <- collect_additive_terms(lhs)
+  has_intercept <- TRUE
+  slopes <- list()
+
+  for (term in terms) {
+    if (is.numeric(term)) {
+      if (term == 0) has_intercept <- FALSE
+      # 1 = intercept marker, not a slope
+    } else if (is.call(term) && identical(term[[1]], as.name("-")) &&
+               length(term) == 2 && is.numeric(term[[2]]) && term[[2]] == 1) {
+      # -1 suppresses intercept
+      has_intercept <- FALSE
+    } else {
+      slopes <- c(slopes, list(term))
+    }
+  }
+
+  # Emit occu_re objects
+  re_list <- list()
+  if (has_intercept) {
+    re_list[[length(re_list) + 1L]] <- occu_re("intercept", group = group_var)
+  }
+  for (s in slopes) {
+    re_list[[length(re_list) + 1L]] <- occu_re("slope", group = group_var,
+                                                 covariate = deparse(s))
+  }
+  re_list
+}
+
+#' Parse a mixed-model formula into fixed effects and random effects
+#'
+#' Walks the formula's abstract syntax tree to find bar terms (`|`, `||`),
+#' converts each to occu_re objects, and returns the fixed-effects-only formula.
+#' No external dependencies — pure structural recursion on R's own parse tree.
 #' @noRd
 parse_re_formula <- function(formula) {
-  has_lme4 <- requireNamespace("lme4", quietly = TRUE)
+  # Find all bar terms via AST recursion
+  bars <- findbars_ast(formula)
 
-  if (has_lme4) {
-    # --- Use lme4's parser (gold standard) ---
-    bars <- lme4::findbars(formula)
-    fixed <- lme4::nobars(formula)
-    if (is.null(fixed) || length(fixed) == 2 && is.null(fixed[[2]])) {
-      fixed <- ~ 1
+  # Parse each bar term into occu_re objects
+  re_list <- list()
+  if (length(bars) > 0) {
+    for (bar in bars) {
+      re_list <- c(re_list, bar_to_occu_re(bar))
     }
+  }
 
-    re_list <- list()
-    if (!is.null(bars)) {
-      for (bar in bars) {
-        # bar is a call like `1 | group` or `x | group`
-        grp <- deparse(bar[[3]])  # RHS of |
-        lhs <- deparse(bar[[2]])  # LHS of |
-
-        # lme4 parses (1 + x | group) into a single bar with lhs = "1 + x"
-        # Split into individual terms
-        lhs_terms <- trimws(strsplit(lhs, "\\+")[[1]])
-
-        for (term in lhs_terms) {
-          if (term == "1") {
-            re_list[[length(re_list) + 1]] <- occu_re("intercept", group = grp)
-          } else if (term == "0") {
-            next  # (0 + x | group) means no intercept, skip
-          } else {
-            re_list[[length(re_list) + 1]] <- occu_re("slope", group = grp,
-                                                        covariate = term)
-          }
-        }
-      }
-    }
+  # Remove bar terms to get fixed-effects formula
+  fixed_call <- nobars_ast(formula)
+  if (is.null(fixed_call) ||
+      (length(fixed_call) == 2 && is.null(fixed_call[[2]]))) {
+    fixed <- ~ 1
   } else {
-    # --- Fallback: regex parser ---
-    formula_str <- paste(deparse(formula, width.cutoff = 500), collapse = "")
-
-    re_pattern <- "\\(\\s*([^|]+)\\s*\\|\\s*([^)]+)\\s*\\)"
-    re_matches <- gregexpr(re_pattern, formula_str, perl = TRUE)
-    re_strings <- regmatches(formula_str, re_matches)[[1]]
-
-    re_list <- list()
-    if (length(re_strings) > 0) {
-      for (rs in re_strings) {
-        inner <- sub("^\\(\\s*", "", sub("\\s*\\)$", "", rs))
-        parts <- strsplit(inner, "\\s*\\|\\s*")[[1]]
-        lhs_terms <- trimws(strsplit(parts[1], "\\+")[[1]])
-        group <- trimws(parts[2])
-
-        for (term in lhs_terms) {
-          if (term == "1") {
-            re_list[[length(re_list) + 1]] <- occu_re("intercept", group = group)
-          } else if (term != "0") {
-            re_list[[length(re_list) + 1]] <- occu_re("slope", group = group,
-                                                        covariate = term)
-          }
-        }
-      }
-
-      # Strip RE terms from formula
-      fixed_str <- formula_str
-      for (rs in re_strings) {
-        fixed_str <- sub(paste0("\\+?\\s*", gsub("([.|()^{}])", "\\\\\\1", rs)),
-                         "", fixed_str, perl = TRUE)
-      }
-      fixed_str <- gsub("~\\s*\\+", "~", fixed_str)
-      fixed_str <- gsub("\\+\\s*$", "", fixed_str)
-      fixed_str <- trimws(fixed_str)
-      if (grepl("~\\s*$", fixed_str)) fixed_str <- paste0(fixed_str, " 1")
-    } else {
-      fixed_str <- formula_str
-    }
-    fixed <- as.formula(fixed_str)
+    fixed <- as.formula(fixed_call, env = environment(formula))
   }
 
   list(

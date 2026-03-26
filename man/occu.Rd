@@ -31,13 +31,15 @@ occu(
   max.iter = 50L,
   tol = 1e-04,
   damping = 0.3,
+  ensemble = FALSE,
+  num.threads = "1:1",
   k.fold = 0L,
   verbose = 1L
 )
 }
 \arguments{
-\item{occ.formula}{RHS formula for occupancy (psi). Supports lme4-style
-random effects: \code{~ elev + forest + (1 | region)}.}
+\item{occ.formula}{RHS formula for occupancy (psi). Supports mixed-model
+random effects syntax: \code{~ elev + forest + (1 | region)}.}
 
 \item{det.formula}{RHS formula for detection (p). NULL for JSDM models
 (set \code{multispecies = "jsdm"}).}
@@ -80,6 +82,12 @@ list.}
 \item{tol}{Convergence tolerance (default 1e-4).}
 
 \item{damping}{EM damping factor 0--1 (default 0.3).}
+
+\item{ensemble}{Logical; if \code{TRUE}, use ensemble averaging across
+multiple imputation chains (default \code{FALSE}).}
+
+\item{num.threads}{Thread specification for INLA, as \code{"A:B"} where A is
+outer and B is inner OpenMP threads (default \code{"1:1"}).}
 
 \item{k.fold}{Number of cross-validation folds (default 0, no CV).}
 

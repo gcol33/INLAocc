@@ -1,7 +1,7 @@
 # =============================================================================
 # run_demo.R — Full demonstration of the INLA occupancy framework
 # =============================================================================
-# Exercises all features: basic model, lme4 formula syntax, random intercepts
+# Exercises all features: basic model, mixed-model formula syntax, random intercepts
 # and slopes, spatial SPDE, multi-species, temporal, integrated, latent
 # factors, SVC, GOF, WAIC, k-fold CV, marginal effects, prediction.
 # =============================================================================
@@ -53,10 +53,10 @@ cat(sprintf("  Occ betas: true = [%.2f, %.2f, %.2f] | est = [%.3f, %.3f, %.3f]\n
             fit_basic$occ_fit$summary.fixed$mean[3]))
 
 # ============================================================================
-# 2. lme4-style formula with random effects
+# 2. Mixed-model formula with random effects
 # ============================================================================
 cat("\n========================================\n")
-cat("2. lme4 formula syntax: (1 | group) and (x | group)\n")
+cat("2. Mixed-model formula syntax: (1 | group) and (x | group)\n")
 cat("========================================\n")
 
 sim$data$occ.covs$region <- sample(1:5, sim$data$N, replace = TRUE)

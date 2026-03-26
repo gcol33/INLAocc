@@ -10,7 +10,7 @@
 * Spatially-varying coefficients: `svcOccu_inla()`.
 * Latent factor multi-species: `lfMsOccu_inla()`, `sfMsOccu_inla()`.
 * JSDM without detection: `lfJSDM_inla()`.
-* lme4-style `(1 | group)` and `(x | group)` random effects in formulas.
+* Native AST-based `(1 | group)` and `(x | group)` random effects parser (no lme4 dependency).
 * spOccupancy-compatible data format and `priors` argument.
 * `ppcOccu()`, `waicOccu()`, `fitted()`, `residuals()` diagnostics.
 * `k.fold` cross-validation argument.

@@ -10,8 +10,8 @@
 #' from \pkg{spOccupancy} (PGOcc, spPGOcc, tPGOcc, msPGOcc, etc.) via
 #' flag combinations.
 #'
-#' @param occ.formula RHS formula for occupancy (psi). Supports lme4-style
-#'   random effects: \code{~ elev + forest + (1 | region)}.
+#' @param occ.formula RHS formula for occupancy (psi). Supports mixed-model
+#'   random effects syntax: \code{~ elev + forest + (1 | region)}.
 #' @param det.formula RHS formula for detection (p). NULL for JSDM models
 #'   (set \code{multispecies = "jsdm"}).
 #' @param data An \code{occu_data} or \code{occu_data_ms} object, or a raw
@@ -40,6 +40,10 @@
 #' @param tol Convergence tolerance (default 1e-4).
 #' @param damping EM damping factor 0--1 (default 0.3).
 #' @param k.fold Number of cross-validation folds (default 0, no CV).
+#' @param ensemble Logical; if `TRUE`, use ensemble averaging across
+#'   multiple imputation chains (default `FALSE`).
+#' @param num.threads Thread specification for INLA, as `"A:B"` where A is
+#'   outer and B is inner OpenMP threads (default `"1:1"`).
 #' @param verbose 0 = silent, 1 = iteration summaries, 2 = full INLA output.
 #'
 #' @return An S3 object whose class depends on the model type (e.g.,
@@ -75,10 +79,16 @@ occu <- function(occ.formula, det.formula = NULL, data,
                  max.iter     = 50L,
                  tol          = 1e-4,
                  damping      = 0.3,
+                 ensemble     = FALSE,
+                 num.threads  = "1:1",
                  k.fold       = 0L,
                  verbose      = 1L) {
 
   check_inla()
+
+  # --- GPU / threading setup ---
+  # num.threads = "A:B" (A = outer, B = inner OpenMP threads)
+  # Pass through to INLA via control.inla or directly in engine calls.
 
   # --- 1. Resolve model type ---
   model_key <- resolve_model_type(
@@ -126,6 +136,8 @@ occu <- function(occ.formula, det.formula = NULL, data,
     max.iter    = max.iter,
     tol         = tol,
     damping     = damping,
+    ensemble    = ensemble,
+    num.threads = num.threads,
     k.fold      = k.fold,
     verbose     = verbose,
     # Keep raw formulas for storage in result

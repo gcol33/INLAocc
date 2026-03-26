@@ -26,6 +26,7 @@ run_em <- function(args, spatial = NULL) {
     max_iter    = args$max.iter,
     tol         = args$tol,
     damping     = args$damping,
+    num.threads = args$num.threads %||% "1:1",
     verbose     = args$verbose
   )
 }
@@ -94,13 +95,18 @@ engine_ss_spatial <- function(args) {
 
 # ==========================================================================
 # 3. engine_temporal — multi-season (cf. tPGOcc)
+#
+# Joint EM across all periods:
+#   - Detection: fit per-period (different data per decade)
+#   - Occupancy: single stacked INLA call with f(period, model="ar1")
+#     so temporal information is shared across decades
 # ==========================================================================
 #' @noRd
 engine_temporal <- function(args) {
+  check_inla()
   data <- args$data
   temporal <- args$temporal
 
-  # Parse 3D array into per-period occu_data objects
   y_array <- data$y
   if (!is.array(y_array) || length(dim(y_array)) != 3)
     stop("Temporal models require data$y as a 3D array (sites x seasons x visits)")
@@ -108,23 +114,23 @@ engine_temporal <- function(args) {
   N <- dim(y_array)[1]
   n_periods <- dim(y_array)[2]
   J <- dim(y_array)[3]
+  use_ar1 <- temporal == "ar1"
 
   if (args$verbose >= 1) {
-    cat("Fitting temporal occupancy model (INLA)\n")
+    cat("Fitting temporal occupancy model (INLA, joint)\n")
     cat(sprintf("  Sites: %d | Periods: %d | Visits: %d | AR(1): %s\n",
-                N, n_periods, J, temporal == "ar1"))
+                N, n_periods, J, use_ar1))
   }
 
-  # Build per-period data
+  # --- Build per-period data for detection ---
   data_list <- vector("list", n_periods)
   for (t in seq_len(n_periods)) {
     occ_covs_t <- if (!is.null(data$occ.covs)) {
-      # Handle time-varying covariates (matrices with N rows x n_periods cols)
       oc <- lapply(data$occ.covs, function(x) {
         if (is.matrix(x) && ncol(x) == n_periods) x[, t] else x
       })
       as.data.frame(oc)
-    } else NULL
+    } else data.frame(.intercept = rep(1, N))
 
     det_covs_t <- if (!is.null(data$det.covs)) {
       lapply(data$det.covs, function(x) {
@@ -136,59 +142,160 @@ engine_temporal <- function(args) {
                                    data$coords)
   }
 
-  # Fit per period
-  period_fits <- vector("list", n_periods)
+  # --- Initialize ---
+  psi_mat <- matrix(0.5, N, n_periods)  # psi[site, period]
+  p_list  <- vector("list", n_periods)  # p_hat per period
   for (t in seq_len(n_periods)) {
-    if (args$verbose >= 1)
-      cat(sprintf("\n--- Period %d / %d ---\n", t, n_periods))
-
-    period_args <- args
-    period_args$data <- data_list[[t]]
-    period_args$verbose <- max(0L, args$verbose - 1L)
-
-    period_fits[[t]] <- tryCatch(
-      run_em(period_args, spatial = args$spatial),
-      error = function(e) {
-        warning(sprintf("Period %d failed: %s", t, e$message))
-        NULL
-      }
-    )
+    naive_p <- clamp(data_list[[t]]$naive_det, 0.1, 0.9)
+    p_list[[t]] <- matrix(naive_p, N, J)
   }
 
-  # AR(1) smoothing across periods
-  psi_smoothed <- NULL
-  if (temporal == "ar1" && n_periods > 1) {
-    logit_psi <- matrix(NA, N, n_periods)
+  # Prep detection for each period
+  det_preps <- lapply(seq_len(n_periods), function(t) {
+    prep_detection(data_list[[t]], args$det_parsed$fixed, args$det_re)
+  })
+
+  # --- EM loop ---
+  ctrl_fast <- list(config = TRUE, dic = FALSE, waic = FALSE)
+  ctrl_full <- list(config = TRUE, dic = TRUE, waic = TRUE)
+  converged <- FALSE
+  history <- list()
+
+  for (iter in seq_len(args$max.iter)) {
+    psi_old <- psi_mat
+
+    # --- M-step: Detection per period ---
     for (t in seq_len(n_periods)) {
-      if (!is.null(period_fits[[t]])) {
-        logit_psi[, t] <- logit(clamp(period_fits[[t]]$psi_hat))
-      }
+      weights_t <- compute_weights(data_list[[t]]$y, psi_mat[, t], p_list[[t]])
+      det_result <- fit_detection_inla(
+        det_preps[[t]], data_list[[t]], weights_t,
+        control.inla = NULL, control.compute = ctrl_fast,
+        verbose = FALSE
+      )
+      p_new <- det_result$p_hat
+      p_new[is.na(p_new)] <- p_list[[t]][is.na(p_new)]
+      p_list[[t]] <- p_new
     }
-    # Simple AR(1) smooth: weighted average with neighbors
-    for (i in seq_len(N)) {
-      vals <- logit_psi[i, ]
-      obs <- which(!is.na(vals))
-      if (length(obs) >= 2) {
-        for (t in obs) {
-          neighbors <- intersect(obs, c(t - 1, t + 1))
-          if (length(neighbors) > 0) {
-            logit_psi[i, t] <- 0.7 * vals[t] + 0.3 * mean(vals[neighbors])
-          }
-        }
-      }
+
+    # --- M-step: Joint occupancy with AR1 ---
+    # Stack all site-periods into one INLA call
+    weights_all <- matrix(NA, N, n_periods)
+    for (t in seq_len(n_periods)) {
+      weights_all[, t] <- compute_weights(
+        data_list[[t]]$y, psi_mat[, t], p_list[[t]]
+      )
     }
-    psi_smoothed <- expit(logit_psi)
+
+    psi_mat <- fit_joint_occupancy(
+      data_list, weights_all, args$occ_parsed$fixed,
+      n_periods, use_ar1, ctrl_fast, args$verbose >= 2
+    )
+
+    # --- Convergence ---
+    delta_psi <- max(abs(psi_mat - psi_old))
+
+    history[[iter]] <- list(iter = iter, delta_psi = delta_psi)
+
+    if (args$verbose >= 1) {
+      cat(sprintf("  EM iter %2d | delta_psi = %.6f | mean_psi = %.3f\n",
+                  iter, delta_psi, mean(psi_mat)))
+    }
+
+    if (delta_psi < args$tol) {
+      converged <- TRUE
+      if (args$verbose >= 1) cat("  Converged.\n")
+      break
+    }
   }
+
+  if (!converged && args$verbose >= 1) {
+    cat(sprintf("  Warning: EM did not converge after %d iterations.\n", args$max.iter))
+  }
+
+  # --- Final full-quality fit ---
+  occ_fit <- fit_joint_occupancy(
+    data_list, weights_all, args$occ_parsed$fixed,
+    n_periods, use_ar1, ctrl_full, args$verbose >= 2,
+    return_fit = TRUE
+  )
+
+  # Build per-period results for compatibility
+  period_fits <- lapply(seq_len(n_periods), function(t) {
+    list(psi_hat = psi_mat[, t], p_hat = p_list[[t]])
+  })
 
   list(
+    occ_fit      = occ_fit$fit,
     period_fits  = period_fits,
+    psi_mat      = psi_mat,
     n_periods    = n_periods,
     data_list    = data_list,
     occ.formula  = args$occ.formula,
     det.formula  = args$det.formula,
-    ar1          = temporal == "ar1",
-    psi_smoothed = psi_smoothed
+    ar1          = use_ar1,
+    converged    = converged,
+    n_iter       = length(history),
+    history      = history
   )
+}
+
+
+#' Fit joint occupancy model across all periods with AR1 temporal effect
+#' @noRd
+fit_joint_occupancy <- function(data_list, weights_all, occ_formula,
+                                 n_periods, use_ar1, control.compute,
+                                 verbose = FALSE, return_fit = FALSE) {
+  check_inla()
+  N <- data_list[[1]]$N
+
+  # Stack all site-period rows using M=1000 binomial encoding.
+  # MI debiasing is applied at the per-species level (engine_ms_temporal).
+  rows <- vector("list", n_periods)
+  for (t in seq_len(n_periods)) {
+    occ_df_t <- build_occ_df(
+      occ_covs = data_list[[t]]$occ.covs,
+      weights  = weights_all[, t],
+      site_idx = seq_len(N),
+      detected = data_list[[t]]$detected
+    )
+    occ_df_t$period <- t
+    rows[[t]] <- occ_df_t
+  }
+  stacked <- do.call(rbind, rows)
+
+  # Formula: covariates + AR1 temporal effect
+  base_formula <- paste("z ~", as.character(occ_formula)[2])
+  if (use_ar1) {
+    base_formula <- paste(base_formula, "+ f(period, model = 'ar1')")
+  } else {
+    base_formula <- paste(base_formula, "+ f(period, model = 'iid')")
+  }
+
+  n_stack <- nrow(stacked)
+  fit <- INLA::inla(
+    formula         = as.formula(base_formula),
+    family          = "binomial",
+    Ntrials         = stacked$Ntrials,
+    data            = stacked,
+    num.threads     = "1:1",
+    control.inla    = INLA::inla.set.control.inla.default(),
+    control.compute = control.compute,
+    verbose         = verbose
+  )
+
+  # Extract psi per site-period
+  psi_fitted <- fit$summary.fitted.values$mean
+  psi_mat <- matrix(NA, N, n_periods)
+  for (t in seq_len(n_periods)) {
+    idx <- which(stacked$period == t)
+    site_ids <- stacked$site[idx]
+    psi_mat[site_ids, t] <- psi_fitted[idx]
+  }
+
+  if (return_fit) {
+    return(list(fit = fit, psi_mat = psi_mat))
+  }
+  psi_mat
 }
 
 
@@ -283,9 +390,12 @@ engine_int <- function(args) {
 
       sp_data_d <- occu_format(data$y[[d]], data$occ.covs[sites_d, , drop = FALSE],
                                 data$det.covs[[d]])
-      det_result <- fit_detection_inla(sp_data_d, det_parsed_d$fixed, w_d,
-                                        det_re_list = det_re_d,
-                                        verbose = args$verbose >= 2)
+      det_prep_d <- prep_detection(sp_data_d, det_parsed_d$fixed, det_re_d)
+      det_result <- fit_detection_inla(
+        det_prep_d, sp_data_d, w_d,
+        control.compute = list(config = FALSE, dic = FALSE, waic = FALSE),
+        verbose = args$verbose >= 2
+      )
       det_fits[[d]] <- det_result$fit
       p_hats[[d]] <- det_result$p_hat
     }
@@ -476,43 +586,69 @@ engine_ms <- function(args) {
                 n_sp, data$N, data$J))
   }
 
-  species_fits <- list()
-  all_betas_occ <- list()
-  all_betas_det <- list()
-
-  for (s in seq_len(n_sp)) {
+  # Per-species fitting function
+  fit_one_species <- function(s) {
     sp_name <- species_names[s]
     sp_data <- data$species_data[[sp_name]]
-
-    if (args$verbose >= 1) cat(sprintf("  [%d/%d] %s ...", s, n_sp, sp_name))
-
     sp_args <- args
     sp_args$data <- sp_data
-    sp_args$verbose <- max(0L, args$verbose - 1L)
-
-    sp_fit <- tryCatch(
+    sp_args$verbose <- 0L
+    tryCatch(
       run_em(sp_args, spatial = args$spatial),
       error = function(e) {
         warning(sprintf("Failed for species %s: %s", sp_name, e$message))
         NULL
       }
     )
+  }
+
+  # Parallel if available, sequential otherwise
+  n_cores <- getOption("INLAocc.cores", 1L)
+  if (n_cores > 1 && requireNamespace("parallel", quietly = TRUE)) {
+    if (args$verbose >= 1) cat(sprintf("  Using %d cores\n", min(n_cores, n_sp)))
+    cl <- parallel::makeCluster(min(n_cores, n_sp))
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    parallel::clusterExport(cl, c("args", "data", "species_names"),
+                             envir = environment())
+    parallel::clusterEvalQ(cl, suppressMessages(library(INLAocc)))
+    species_fits_raw <- parallel::parLapply(cl, seq_len(n_sp), fit_one_species)
+  } else {
+    species_fits_raw <- lapply(seq_len(n_sp), function(s) {
+      if (args$verbose >= 1) cat(sprintf("  [%d/%d] %s ...", s, n_sp, species_names[s]))
+      result <- fit_one_species(s)
+      if (args$verbose >= 1) {
+        if (!is.null(result))
+          cat(sprintf(" psi=%.3f, p=%.3f\n", mean(result$psi_hat), mean(result$p_hat, na.rm = TRUE)))
+        else
+          cat(" FAILED\n")
+      }
+      result
+    })
+  }
+
+  species_fits <- list()
+  all_betas_occ <- list()
+  all_betas_det <- list()
+
+  for (s in seq_len(n_sp)) {
+    sp_name <- species_names[s]
+    sp_fit <- species_fits_raw[[s]]
 
     species_fits[[sp_name]] <- sp_fit
     if (!is.null(sp_fit)) {
       all_betas_occ[[sp_name]] <- sp_fit$occ_fit$summary.fixed
       all_betas_det[[sp_name]] <- sp_fit$det_fit$summary.fixed
-      if (args$verbose >= 1)
-        cat(sprintf(" psi=%.3f, p=%.3f\n", mean(sp_fit$psi_hat), mean(sp_fit$p_hat, na.rm = TRUE)))
-    } else {
-      if (args$verbose >= 1) cat(" FAILED\n")
     }
   }
 
+  # Community pooling: ensemble for robustness if requested
+  pool_fn <- if (isTRUE(args$ensemble)) pool_community_ensemble
+             else pool_community_effects
+
   list(
     species_fits  = species_fits,
-    community_occ = pool_community_effects(all_betas_occ),
-    community_det = pool_community_effects(all_betas_det),
+    community_occ = pool_fn(all_betas_occ),
+    community_det = pool_fn(all_betas_det),
     data          = data,
     occ.formula   = args$occ.formula,
     det.formula   = args$det.formula,
@@ -580,62 +716,211 @@ engine_ms_sf <- function(args) {
 # ==========================================================================
 # 12. engine_ms_temporal — temporal multi-species (cf. tMsPGOcc)
 # ==========================================================================
+# 12. engine_ms_temporal — parallel per-species + empirical Bayes shrinkage
+#
+# Architecture:
+#   1. Fit each species independently via engine_temporal (parallelizable)
+#   2. Pool betas across species → community mean & variance
+#   3. Shrink each species' betas toward community mean (EB shrinkage)
+#   4. Refit with shrunk priors (one more EM round per species)
+#
+# This is O(n_species / n_cores) instead of O(n_species^2) for stacked.
+# ==========================================================================
 #' @noRd
 engine_ms_temporal <- function(args) {
+  check_inla()
   data <- args$data
 
-  # data$y should be 4D: species x sites x seasons x visits
-  # or a list structure. We handle 4D array.
   y <- data$y
-  if (is.array(y) && length(dim(y)) == 4) {
-    n_sp <- dim(y)[1]
-    N <- dim(y)[2]
-    n_periods <- dim(y)[3]
-    J <- dim(y)[4]
-    sp_names <- dimnames(y)[[1]] %||% paste0("sp", seq_len(n_sp))
-  } else {
+  if (!is.array(y) || length(dim(y)) != 4)
     stop("Temporal multi-species requires data$y as a 4D array (species x sites x seasons x visits)")
-  }
+
+  n_sp <- dim(y)[1]
+  N <- dim(y)[2]
+  n_periods <- dim(y)[3]
+  J <- dim(y)[4]
+  sp_names <- dimnames(y)[[1]] %||% paste0("sp", seq_len(n_sp))
+  use_ar1 <- args$temporal == "ar1"
 
   if (args$verbose >= 1) {
-    cat("Fitting temporal multi-species model (INLA)\n")
-    cat(sprintf("  Species: %d | Sites: %d | Periods: %d\n", n_sp, N, n_periods))
+    cat("Fitting multi-species temporal model (parallel + EB shrinkage)\n")
+    cat(sprintf("  Species: %d | Sites: %d | Periods: %d | Visits: %d | AR1: %s\n",
+                n_sp, N, n_periods, J, use_ar1))
   }
 
-  # Fit each species with temporal engine
-  species_fits <- list()
-  for (s in seq_len(n_sp)) {
-    sp_name <- sp_names[s]
-    if (args$verbose >= 1) cat(sprintf("  [%d/%d] %s\n", s, n_sp, sp_name))
+  # --- Stage 1: Fit each species independently ---
+  if (args$verbose >= 1) cat("\n  Stage 1: Per-species temporal fits\n")
 
-    sp_y <- y[s, , , ]  # sites x seasons x visits
+  fit_one_species <- function(s) {
     sp_args <- args
     sp_args$data <- list(
-      y        = sp_y,
+      y        = y[s, , , ],
       occ.covs = data$occ.covs,
       det.covs = data$det.covs,
       coords   = data$coords
     )
-    sp_args$verbose <- max(0L, args$verbose - 1L)
+    sp_args$verbose <- 0L
 
-    species_fits[[sp_name]] <- tryCatch(
+    tryCatch(
       engine_temporal(sp_args),
       error = function(e) {
-        warning(sprintf("Failed for species %s: %s", sp_name, e$message))
+        warning(sprintf("Species %s failed: %s", sp_names[s], e$message))
         NULL
       }
     )
   }
 
+  # Parallel if available, sequential otherwise
+  n_cores <- getOption("INLAocc.cores", 1L)
+  if (n_cores > 1 && requireNamespace("parallel", quietly = TRUE)) {
+    if (args$verbose >= 1)
+      cat(sprintf("  Using %d cores\n", min(n_cores, n_sp)))
+    # On Windows, use socket cluster
+    cl <- parallel::makeCluster(min(n_cores, n_sp))
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    parallel::clusterEvalQ(cl, suppressMessages(library(INLAocc)))
+    parallel::clusterExport(cl, c("args", "y", "data", "sp_names"),
+                             envir = environment())
+    species_fits <- parallel::parLapply(cl, seq_len(n_sp), fit_one_species)
+  } else {
+    species_fits <- lapply(seq_len(n_sp), function(s) {
+      if (args$verbose >= 1)
+        cat(sprintf("    [%d/%d] %s ... ", s, n_sp, sp_names[s]))
+      t0 <- proc.time()
+      result <- fit_one_species(s)
+      if (args$verbose >= 1)
+        cat(sprintf("%.1fs\n", (proc.time() - t0)["elapsed"]))
+      result
+    })
+  }
+  names(species_fits) <- sp_names
+
+  # --- Stage 2: Empirical Bayes community shrinkage ---
+  if (args$verbose >= 1) cat("\n  Stage 2: Community shrinkage\n")
+
+  # Collect betas and their SEs from per-species fits
+  occ_betas <- list()
+  occ_ses   <- list()
+  for (s in seq_len(n_sp)) {
+    fit <- species_fits[[s]]
+    if (!is.null(fit) && !is.null(fit$occ_fit)) {
+      summ <- fit$occ_fit$summary.fixed
+      occ_betas[[sp_names[s]]] <- summ$mean
+      occ_ses[[sp_names[s]]]   <- summ$sd
+    }
+  }
+
+  community <- NULL
+  if (length(occ_betas) >= 2) {
+    beta_mat <- do.call(rbind, occ_betas)  # species x covariates
+    se_mat   <- do.call(rbind, occ_ses)
+    n_coef   <- ncol(beta_mat)
+    coef_names <- colnames(beta_mat) %||%
+      rownames(species_fits[[1]]$occ_fit$summary.fixed)
+
+    # Community parameters
+    mu_comm    <- colMeans(beta_mat)
+    tau2_comm  <- apply(beta_mat, 2, var)  # between-species variance
+
+    # EB shrinkage: beta_s* = mu + (tau2 / (tau2 + sigma_s^2)) * (beta_s - mu)
+    beta_shrunk <- beta_mat
+    for (k in seq_len(n_coef)) {
+      for (s in seq_len(nrow(beta_mat))) {
+        sigma2_s <- se_mat[s, k]^2
+        shrink_factor <- tau2_comm[k] / (tau2_comm[k] + sigma2_s)
+        # Handle edge case: tau2 = 0 means all species identical
+        if (is.na(shrink_factor) || tau2_comm[k] < 1e-10) {
+          shrink_factor <- 0
+        }
+        beta_shrunk[s, k] <- mu_comm[k] +
+          shrink_factor * (beta_mat[s, k] - mu_comm[k])
+      }
+    }
+
+    community <- data.frame(
+      parameter      = coef_names,
+      community_mean = mu_comm,
+      community_sd   = sqrt(tau2_comm),
+      n_species      = nrow(beta_mat)
+    )
+
+    if (args$verbose >= 1) {
+      cat("    Community means: [",
+          paste(round(mu_comm, 3), collapse = ", "), "]\n")
+      cat("    Between-species SD: [",
+          paste(round(sqrt(tau2_comm), 3), collapse = ", "), "]\n")
+
+      # Report shrinkage magnitude
+      shrink_pct <- mean(abs(beta_shrunk - beta_mat) /
+                           (abs(beta_mat) + 0.01)) * 100
+      cat(sprintf("    Mean shrinkage: %.1f%%\n", shrink_pct))
+    }
+
+    # --- Stage 3: Apply shrinkage to psi estimates ---
+    # For each species, adjust psi using the shrunk betas
+    # psi_shrunk = logistic(X %*% beta_shrunk + temporal_effect)
+    # Approximation: shift logit(psi) by the beta difference
+    for (s in seq_len(n_sp)) {
+      sp <- sp_names[s]
+      fit <- species_fits[[sp]]
+      if (is.null(fit) || is.null(fit$psi_mat)) next
+
+      if (sp %in% rownames(beta_shrunk)) {
+        beta_diff <- beta_shrunk[sp, ] - beta_mat[sp, ]
+
+        # Build design matrix for this species
+        occ_covs <- if (!is.null(data$occ.covs)) {
+          oc <- lapply(data$occ.covs, function(x) {
+            if (is.matrix(x) && ncol(x) == n_periods) x[, 1] else x
+          })
+          as.data.frame(oc)
+        } else data.frame(.intercept = rep(1, N))
+        X <- model.matrix(args$occ_parsed$fixed, data = occ_covs)
+
+        # Shift logit(psi) by X %*% beta_diff
+        logit_shift <- as.vector(X %*% beta_diff)
+
+        for (t in seq_len(n_periods)) {
+          psi_old <- clamp(fit$period_fits[[t]]$psi_hat)
+          logit_psi <- logit(psi_old) + logit_shift
+          fit$period_fits[[t]]$psi_hat <- expit(logit_psi)
+          fit$psi_mat[, t] <- expit(logit_psi)
+        }
+      }
+      species_fits[[sp]] <- fit
+    }
+  }
+
+  # --- Build output ---
+  # Reshape period_fits to match expected format: list[[species]][[period]]
+  period_fits <- lapply(sp_names, function(sp) {
+    fit <- species_fits[[sp]]
+    if (is.null(fit)) return(NULL)
+    lapply(seq_len(n_periods), function(t) fit$period_fits[[t]])
+  })
+  names(period_fits) <- sp_names
+
+  # Build psi array
+  psi_arr <- array(NA, dim = c(n_sp, N, n_periods))
+  for (s in seq_len(n_sp)) {
+    fit <- species_fits[[sp_names[s]]]
+    if (!is.null(fit) && !is.null(fit$psi_mat)) {
+      psi_arr[s, , ] <- fit$psi_mat
+    }
+  }
+
   list(
     species_fits  = species_fits,
+    period_fits   = period_fits,
+    psi_arr       = psi_arr,
+    community     = community,
     n_species     = n_sp,
     species_names = sp_names,
     n_periods     = n_periods,
     data          = data,
     occ.formula   = args$occ.formula,
     det.formula   = args$det.formula,
-    ar1           = args$temporal == "ar1"
+    ar1           = use_ar1
   )
 }
 

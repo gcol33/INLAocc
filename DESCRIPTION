@@ -8,7 +8,7 @@ Authors@R:
 Description: Fits single-species, multi-species, spatial, temporal, integrated,
     and spatially-varying coefficient occupancy models using Integrated Nested
     Laplace Approximations (INLA). Provides a fast alternative to MCMC-based
-    frameworks like 'spOccupancy', with a compatible API including 'lme4'-style
+    frameworks like 'spOccupancy', with a compatible API including mixed-model
     random effects syntax, posterior predictive checks, WAIC, k-fold
     cross-validation, and design-matrix prediction. Uses an EM algorithm with
     INLA at each M-step for the two-process (occupancy/detection) likelihood.
@@ -26,7 +26,6 @@ Imports:
     utils
 Suggests:
     INLA,
-    lme4,
     MASS,
     spOccupancy,
     testthat (>= 3.0.0)

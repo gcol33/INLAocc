@@ -51,6 +51,54 @@ pool_community_effects <- function(beta_list) {
 }
 
 
+#' Bootstrap-ensemble community pooling for robustness against outlier species
+#'
+#' Fits community estimates on B random subsets (each of size prop * n_species),
+#' then pools across subsets. Species that distort the community mean in the
+#' full-data estimate get diluted because they appear in only some subsets.
+#'
+#' @param beta_list Named list of summary.fixed data frames (one per species)
+#' @param B Number of bootstrap subsets (default 50)
+#' @param prop Proportion of species per subset (default 0.7)
+#' @param seed Random seed for reproducibility
+#' @return Community data frame (same format as pool_community_effects)
+#' @noRd
+pool_community_ensemble <- function(beta_list, B = 50L, prop = 0.7,
+                                     seed = NULL) {
+  beta_list <- Filter(function(x) !is.null(x), beta_list)
+  n_sp <- length(beta_list)
+  if (n_sp < 3) return(pool_community_effects(beta_list))
+
+  subset_size <- max(3L, round(n_sp * prop))
+  coef_names <- rownames(beta_list[[1]])
+  n_coef <- length(coef_names)
+
+  if (!is.null(seed)) set.seed(seed)
+
+  # Each subset produces a community estimate
+  ensemble_means <- matrix(NA, n_coef, B)
+  ensemble_sds   <- matrix(NA, n_coef, B)
+
+  for (b in seq_len(B)) {
+    idx <- sample(n_sp, subset_size, replace = FALSE)
+    sub_pool <- pool_community_effects(beta_list[idx])
+    ensemble_means[, b] <- sub_pool$community_mean
+    ensemble_sds[, b]   <- sub_pool$community_sd
+  }
+
+  # Pool across subsets: mean of means, inflated SD
+  data.frame(
+    parameter      = coef_names,
+    community_mean = rowMeans(ensemble_means),
+    community_sd   = sqrt(rowMeans(ensemble_sds^2) +
+                            apply(ensemble_means, 1, var)),
+    species_sd     = apply(ensemble_means, 1, sd),
+    n_species      = n_sp,
+    n_subsets       = B
+  )
+}
+
+
 # =============================================================================
 # Deprecated wrappers — use occu() instead
 # =============================================================================

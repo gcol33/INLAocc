@@ -20,3 +20,6 @@
 ^build_site\.R$
 ^\.unrot$
 ^matrix\.md$
+^benchmark$
+^upcoming\.md$
+^README\.md$

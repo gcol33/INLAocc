@@ -135,6 +135,34 @@ occu_community_re <- function(type = c("intercept", "slope"),
 }
 
 
+#' Resolve group variable values, handling interaction terms (e.g., "site:year")
+#' @noRd
+resolve_group_vals <- function(group_name, data1, data2 = NULL) {
+  # Direct lookup first
+  vals <- data1[[group_name]]
+  if (!is.null(vals)) return(vals)
+  if (!is.null(data2)) {
+    vals <- data2[[group_name]]
+    if (!is.null(vals)) return(vals)
+  }
+
+  # Interaction group: "a:b" → build from separate columns
+  if (grepl(":", group_name, fixed = TRUE)) {
+    parts <- strsplit(group_name, ":", fixed = TRUE)[[1]]
+    cols <- list()
+    for (p in parts) {
+      v <- data1[[p]]
+      if (is.null(v) && !is.null(data2)) v <- data2[[p]]
+      if (is.null(v)) return(NULL)  # can't resolve a component
+      cols[[p]] <- v
+    }
+    return(as.integer(interaction(cols, drop = TRUE)))
+  }
+
+  NULL
+}
+
+
 #' @noRd
 build_re_components <- function(re_list, df, source_data, prefix = "occ",
                                 process = c("occ", "det")) {
@@ -152,7 +180,7 @@ build_re_components <- function(re_list, df, source_data, prefix = "occ",
 
     # Extract group values from appropriate source
     if (process == "occ") {
-      group_vals <- source_data$occ.covs[[re$group]]
+      group_vals <- resolve_group_vals(re$group, source_data$occ.covs, df)
       if (is.null(group_vals)) {
         group_vals <- df[[re$group]]
       }
@@ -173,10 +201,10 @@ build_re_components <- function(re_list, df, source_data, prefix = "occ",
 
     } else {
       # Detection data: group values might be site-level or visit-level
-      group_vals <- df[[re$group]]
+      group_vals <- resolve_group_vals(re$group, df, NULL)
       if (is.null(group_vals)) {
-        # Try to get from source_data
-        site_vals <- source_data$occ.covs[[re$group]]
+        # Try to get from source_data at site level
+        site_vals <- resolve_group_vals(re$group, source_data$occ.covs, NULL)
         if (!is.null(site_vals)) {
           group_vals <- site_vals[df$site]
         }
