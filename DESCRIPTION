@@ -27,8 +27,13 @@ Imports:
 Suggests:
     DHARMa,
     INLA,
+    knitr,
     MASS,
+    rmarkdown,
     spOccupancy,
     testthat (>= 3.0.0)
+VignetteBuilder: knitr
 Additional_repositories: https://inla.r-inla-download.org/R/stable
 Config/testthat/edition: 3
+URL: https://gillescolling.com/INLAocc/, https://github.com/gcol33/INLAocc
+BugReports: https://github.com/gcol33/INLAocc/issues

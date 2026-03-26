@@ -33,6 +33,11 @@ navbar:
     - github
 
 reference:
+- title: Unified Interface
+  desc: One function for all model types.
+  contents:
+  - occu
+
 - title: Single-Species Models
   desc: Non-spatial and spatial occupancy models for one species.
   contents:
@@ -60,6 +65,7 @@ reference:
   contents:
   - occu_format
   - occu_format_ms
+  - occu_data
 
 - title: Model Specification
   desc: Random effects, priors, and spatial components.
@@ -77,14 +83,49 @@ reference:
   - marginal_effect
   - richness
 
-- title: Diagnostics & Model Comparison
-  desc: Goodness-of-fit, WAIC, residuals, cross-validation.
+- title: S3 Methods
+  desc: Standard R generics for occupancy model objects.
   contents:
-  - ppcOccu
-  - waicOccu
+  - coef.occu_inla
+  - confint.occu_inla
+  - vcov.occu_inla
+  - logLik.occu_inla
+  - tidy.occu_inla
+  - glance.occu_inla
+  - ranef.occu_inla
+
+- title: Residual Diagnostics
+  desc: Simulation-based diagnostics (native DHARMa equivalents).
+  contents:
+  - simulate.occu_inla
+  - pitResiduals
+  - testUniformity
+  - testDispersion
+  - testOutliers
+  - testZeroInflation
+  - checkModel
+  - dharma
+
+- title: Spatial & Temporal Diagnostics
+  desc: Autocorrelation testing and semivariograms.
+  contents:
+  - moranI
+  - durbinWatson
+  - variogram
+
+- title: Model Comparison & Averaging
+  desc: Information criteria, weights, and multi-model inference.
+  contents:
   - compare_models
-  - getSVCSamples
+  - modelAverage
+  - waicOccu
+  - ppcOccu
+
+- title: Post-Hoc Analysis
+  desc: Secondary analyses on fitted model outputs.
+  contents:
   - postHocLM
+  - getSVCSamples
 
 - title: Simulation
   desc: Generate synthetic occupancy data for testing.
@@ -92,7 +133,9 @@ reference:
   - simulate_occu
   - simMsOcc
   - simTOcc
+  - simTMsOcc
   - simIntOcc
+  - simIntMsOcc
 
 articles:
 - title: Getting Started
