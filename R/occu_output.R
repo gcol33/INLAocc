@@ -843,6 +843,73 @@ ranef.occu_inla <- function(object,
 }
 
 
+#' Extract log-likelihood
+#'
+#' Returns the observed-data log-likelihood from the final EM iteration.
+#' The \code{df} attribute is set to the number of fixed effect
+#' coefficients (occupancy + detection) and the \code{nobs} attribute
+#' to the number of non-NA detection history entries.
+#'
+#' @param object fitted occu_inla object
+#' @param ... ignored
+#'
+#' @return An object of class \code{"logLik"}.
+#' @export
+logLik.occu_inla <- function(object, ...) {
+  ll <- NA_real_
+  if (!is.null(object$history) && length(object$history) > 0) {
+    last <- object$history[[length(object$history)]]
+    if (!is.null(last$loglik)) ll <- last$loglik
+  }
+
+  n_occ <- nrow(object$occ_fit$summary.fixed)
+  n_det <- nrow(object$det_fit$summary.fixed)
+  df <- n_occ + n_det
+
+  structure(ll, df = df, nobs = nobs.occu_inla(object),
+            class = "logLik")
+}
+
+
+#' Glance at model-level statistics
+#'
+#' Returns a single-row data.frame of model-level summaries, similar to
+#' \code{broom::glance()}.
+#'
+#' @param x fitted occu_inla object
+#' @param ... ignored
+#'
+#' @return A one-row data.frame with columns \code{nobs}, \code{n_sites},
+#'   \code{n_visits}, \code{n_occ_coef}, \code{n_det_coef}, \code{logLik},
+#'   \code{WAIC}, \code{n_iter}, \code{converged}.
+#' @export
+glance.occu_inla <- function(x, ...) {
+  ll <- NA_real_
+  if (!is.null(x$history) && length(x$history) > 0) {
+    last <- x$history[[length(x$history)]]
+    if (!is.null(last$loglik)) ll <- last$loglik
+  }
+
+  waic_occ <- if (!is.null(x$occ_fit$waic)) x$occ_fit$waic$waic else NA_real_
+  waic_det <- if (!is.null(x$det_fit$waic)) x$det_fit$waic$waic else NA_real_
+  waic_total <- sum(waic_occ, waic_det, na.rm = TRUE)
+  if (is.na(waic_occ) && is.na(waic_det)) waic_total <- NA_real_
+
+  data.frame(
+    nobs       = sum(!is.na(x$data$y)),
+    n_sites    = x$data$N,
+    n_visits   = x$data$J,
+    n_occ_coef = nrow(x$occ_fit$summary.fixed),
+    n_det_coef = nrow(x$det_fit$summary.fixed),
+    logLik     = ll,
+    WAIC       = waic_total,
+    n_iter     = x$n_iter %||% NA_integer_,
+    converged  = x$converged %||% NA,
+    row.names  = NULL
+  )
+}
+
+
 #' Compare two occupancy models via WAIC
 #'
 #' @param ... named occu_inla objects to compare
