@@ -4,22 +4,20 @@ template:
   bootswatch: sandstone
   light-switch: yes
   math-rendering: mathjax
-
+  includes:
+    in_header: pkgdown/mathjax-config.html
 figures:
   dev: svg
   fig.ext: svg
   bg: '#F5F6F8'
-
 home:
   title: 'INLAocc: Occupancy Models via INLA'
   description: |
     Fast occupancy models using Integrated Nested Laplace Approximations.
-    A Laplace-based alternative to spOccupancy's MCMC.
-
+    A fast alternative to MCMC for occupancy modelling.
 authors:
   Gilles Colling:
     href: https://github.com/gcol33
-
 navbar:
   structure:
     left:
@@ -31,7 +29,6 @@ navbar:
     - search
     - lightswitch
     - github
-
 reference:
 - title: Unified Interface
   desc: One function for all model types.
@@ -66,6 +63,9 @@ reference:
   - occu_format
   - occu_format_ms
   - occu_data
+  - occu_areal
+  - print.occu_data
+  - print.occu_spatial
 
 - title: Model Specification
   desc: Random effects, priors, and spatial components.
@@ -79,9 +79,14 @@ reference:
   desc: Predict occupancy at new locations, marginal effects, richness.
   contents:
   - predict.occu_inla
+  - predict.occu_inla_int
+  - predict.occu_inla_ms
+  - predict.occu_inla_temporal
+  - predict.occu_inla_jsdm
   - predict_spatial
   - marginal_effect
   - richness
+  - plot.occu_prediction
 
 - title: S3 Methods
   desc: Standard R generics for occupancy model objects.
@@ -90,12 +95,50 @@ reference:
   - confint.occu_inla
   - vcov.occu_inla
   - logLik.occu_inla
+  - nobs.occu_inla
   - tidy.occu_inla
   - glance.occu_inla
   - ranef.occu_inla
+  - update.occu_inla
+  - tidy
+  - ranef
+  - glance
+  - "`$.occu_inla`"
+
+- title: Summary, Print & Plot
+  desc: Model output display methods.
+  contents:
+  - summary.occu_inla
+  - summary.occu_inla_spatial
+  - summary.occu_inla_ms
+  - summary.occu_inla_int
+  - summary.occu_inla_temporal
+  - summary.occu_inla_jsdm
+  - print.occu_inla
+  - print.occu_inla_int
+  - print.occu_inla_ms
+  - print.occu_inla_temporal
+  - print.occu_inla_jsdm
+  - plot.occu_inla
+  - plot.occu_inla_ms
+  - plot.occu_inla_temporal
+  - plot.occu_inla_jsdm
+
+- title: Fitted Values & Residuals
+  desc: Extract fitted values and residuals for all model types.
+  contents:
+  - fitted.occu_inla
+  - fitted.occu_inla_int
+  - fitted.occu_inla_ms
+  - fitted.occu_inla_temporal
+  - fitted.occu_inla_jsdm
+  - residuals.occu_inla
+  - residuals.occu_inla_int
+  - residuals.occu_inla_ms
+  - residuals.occu_inla_temporal
 
 - title: Residual Diagnostics
-  desc: Simulation-based diagnostics (native DHARMa equivalents).
+  desc: Simulation-based diagnostics.
   contents:
   - simulate.occu_inla
   - pitResiduals
@@ -136,6 +179,10 @@ reference:
   - simTMsOcc
   - simIntOcc
   - simIntMsOcc
+
+- title: internal
+  contents:
+  - INLAocc-package
 
 articles:
 - title: Getting Started

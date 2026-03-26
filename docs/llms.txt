@@ -1,0 +1,495 @@
+# INLAocc
+
+**Occupancy models via INLA — a fast alternative to MCMC.**
+
+Fit single-species, multi-species, spatial, temporal, and integrated
+occupancy models through one function. INLAocc uses an EM algorithm with
+INLA at each M-step, giving fast and accurate estimates of species
+occurrence while accounting for imperfect detection.
+
+## Quick Start
+
+``` r
+
+library(INLAocc)
+
+sim <- simulate_occu(N = 200, J = 4, seed = 42)
+fit <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data)
+summary(fit)
+
+# One-call diagnostic panel
+checkModel(fit)
+```
+
+## Why INLAocc
+
+Occupancy models separate two entangled processes — where a species
+actually occurs (occupancy) and where you happen to detect it
+(detection). Getting this right matters for conservation decisions, but
+fitting these models with MCMC can be slow, especially for spatial or
+multi-species extensions.
+
+INLAocc uses an EM algorithm with INLA at each M-step, and a multiple
+imputation step that corrects for the attenuation bias this introduces.
+The estimates correlate \> 0.99 with MCMC, at a fraction of the runtime.
+
+## Features
+
+### Model Types
+
+One [`occu()`](https://gillescolling.com/INLAocc/reference/occu.md) call
+handles everything — model type is determined by the arguments you pass:
+
+| Call | Description |
+|----|----|
+| `occu(~ x, ~ x, data)` | Single-species |
+| `occu(..., spatial = coords)` | Spatial (SPDE mesh) |
+| `occu(..., temporal = "ar1")` | Multi-season with AR(1) |
+| `occu(..., multispecies = TRUE)` | Community model |
+| `occu(..., multispecies = TRUE, n.factors = k)` | Latent factor |
+| `occu(..., multispecies = TRUE, n.factors = k, spatial = coords)` | Spatial factor |
+| `occu(..., spatial = coords, svc = 1)` | Spatially-varying coefficients |
+| `occu(..., integrated = TRUE)` | Integrated multi-source |
+| `occu(..., multispecies = "jsdm")` | Joint SDM (no detection) |
+
+### Random Effects
+
+Mixed-model formula syntax with native AST parsing:
+
+``` r
+
+occu(~ elev + (1 | region), ~ effort, data)              # random intercept
+occu(~ elev + (1 + elev | region), ~ effort, data)       # random slope
+occu(~ elev + (elev || region), ~ effort, data)           # uncorrelated
+occu(~ elev + (1 | site/plot), ~ effort, data)            # nested
+```
+
+### Diagnostics
+
+Full diagnostic suite with zero external dependencies:
+
+``` r
+
+# Simulation-based residual checks
+simulate(fit, nsim = 250)          # posterior predictive simulation
+pitResiduals(fit)                  # PIT scaled residuals
+testUniformity(fit)                # KS test on PIT residuals
+testDispersion(fit)                # over/underdispersion
+testOutliers(fit)                  # simulation envelope test
+testZeroInflation(fit)             # excess zeros
+
+# Spatial / temporal autocorrelation
+moranI(fit)                        # Moran's I (inverse-distance or k-NN)
+durbinWatson(fit)                  # Durbin-Watson for temporal models
+variogram(fit)                     # empirical semivariogram
+
+# GOF and model comparison
+ppcOccu(fit)                       # posterior predictive checks
+waicOccu(fit)                      # WAIC
+AIC(fit); BIC(fit)                 # information criteria
+
+# One-call diagnostic panel
+checkModel(fit)                    # QQ, residuals, dispersion, correlogram
+```
+
+If DHARMa is installed, `dharma(fit)` creates a full DHARMa object.
+
+### Model Selection & Averaging
+
+``` r
+
+comp <- compare_models(null = m1, elev = m2, full = m3, criterion = "aic")
+#>   model      AIC delta  weight
+#> 1  full  339.793 0.000   0.733
+#> 2  elev  342.072 2.278   0.235
+#> 3  null  346.010 6.216   0.033
+
+avg <- modelAverage(null = m1, elev = m2, full = m3, criterion = "aic")
+avg$psi_hat   # model-averaged occupancy
+avg$psi_se    # unconditional SEs (Burnham & Anderson)
+```
+
+### Prediction
+
+``` r
+
+predict(fit, terms = "elev [0:2000 by=100]")   # ggpredict-style
+predict(fit, X.0 = new_covs)                    # design-matrix
+predict_spatial(fit, newcoords, newocc.covs)     # spatial interpolation
+marginal_effect(fit, "elev")                     # response curves
+richness(fit_ms)                                 # multi-species richness
+```
+
+### S3 Methods
+
+``` r
+
+coef(fit)              # posterior means
+confint(fit)           # credible intervals
+vcov(fit)              # variance-covariance
+tidy(fit)              # broom-compatible data.frame
+glance(fit)            # model-level summary
+ranef(fit)             # random effect summaries
+update(fit, ~ . - x2)  # refit with modified formula
+logLik(fit)            # observed-data log-likelihood
+nobs(fit)              # number of observations
+```
+
+## Installation
+
+INLAocc requires INLA, which is not on CRAN:
+
+``` r
+
+install.packages("INLA", repos = c(INLA = "https://inla.r-inla-download.org/R/stable"), dep = TRUE)
+```
+
+Then install the development version:
+
+``` r
+
+# install.packages("pak")
+pak::pak("gcol33/INLAocc")
+```
+
+## Usage
+
+### Single-species with random effects
+
+``` r
+
+sim <- simulate_occu(N = 200, J = 4, seed = 42)
+sim$data$occ.covs$region <- sample(1:5, 200, replace = TRUE)
+
+fit <- occu(
+  ~ occ_x1 + occ_x2 + (1 | region),
+  ~ det_x1,
+  data = sim$data
+)
+summary(fit)
+```
+
+### Spatial model
+
+``` r
+
+sim <- simulate_occu(N = 200, J = 4, spatial_range = 0.2, seed = 123)
+
+fit <- occu(~ occ_x1, ~ det_x1, data = sim$data, spatial = sim$data$coords)
+moranI(fit)  # check residual spatial autocorrelation
+```
+
+### Multi-species community model
+
+``` r
+
+sim_ms <- simMsOcc(N = 100, J = 3, n_species = 10, seed = 200)
+
+fit <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data, multispecies = TRUE)
+rich <- richness(fit)
+```
+
+### Model averaging
+
+``` r
+
+m1 <- occu(~ 1, ~ 1, data = sim$data)
+m2 <- occu(~ occ_x1, ~ det_x1, data = sim$data)
+m3 <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data)
+
+avg <- modelAverage(null = m1, elev = m2, full = m3)
+```
+
+## Coming from spOccupancy?
+
+INLAocc accepts the same `list(y, occ.covs, det.covs, coords)` data
+format. The main differences: one
+[`occu()`](https://gillescolling.com/INLAocc/reference/occu.md) function
+instead of separate model functions, no MCMC tuning parameters, and
+random slopes are supported in addition to random intercepts.
+
+## Documentation
+
+- [Quick
+  Start](https://gillescolling.com/INLAocc/articles/quickstart.html)
+- [Full Reference](https://gillescolling.com/INLAocc/reference/)
+
+## Support
+
+> “Software is like sex: it’s better when it’s free.” — Linus Torvalds
+
+I’m a PhD student who builds R packages in my free time because I
+believe good tools should be free and open. I started these projects for
+my own work and figured others might find them useful too.
+
+If this package saved you some time, buying me a coffee is a nice way to
+say thanks. It helps with my coffee addiction.
+
+[![Buy Me A
+Coffee](https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/gcol33)
+
+## License
+
+MIT (see the LICENSE.md file)
+
+## Citation
+
+``` bibtex
+@software{INLAocc,
+  author = {Colling, Gilles},
+  title = {INLAocc: Occupancy Models via Integrated Nested Laplace Approximation},
+  year = {2026},
+  url = {https://github.com/gcol33/INLAocc}
+}
+```
+
+# Package index
+
+## Unified Interface
+
+One function for all model types.
+
+- [`occu()`](https://gillescolling.com/INLAocc/reference/occu.md) : Fit
+  occupancy models using INLA
+
+## Single-Species Models
+
+Non-spatial and spatial occupancy models for one species.
+
+- [`occu()`](https://gillescolling.com/INLAocc/reference/occu.md) : Fit
+  occupancy models using INLA
+
+## Multi-Species Models
+
+Community occupancy models with species correlations.
+
+- [`occu()`](https://gillescolling.com/INLAocc/reference/occu.md) : Fit
+  occupancy models using INLA
+
+## Temporal & Integrated Models
+
+Multi-season and multi-data-source models.
+
+- [`occu()`](https://gillescolling.com/INLAocc/reference/occu.md) : Fit
+  occupancy models using INLA
+
+## Data Formatting
+
+Prepare detection histories and covariates.
+
+- [`occu_format()`](https://gillescolling.com/INLAocc/reference/occu_format.md)
+  : Format data for INLA occupancy models
+- [`occu_format_ms()`](https://gillescolling.com/INLAocc/reference/occu_format_ms.md)
+  : Create multi-species occupancy data
+- [`occu_data()`](https://gillescolling.com/INLAocc/reference/occu_data.md)
+  : Convert a data.frame to occupancy data
+- [`occu_areal()`](https://gillescolling.com/INLAocc/reference/occu_areal.md)
+  : Create an areal spatial effect for occupancy models (CAR/BYM2)
+- [`print(`*`<occu_data>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_data.md)
+  : Print method for occu_data
+- [`print(`*`<occu_spatial>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_spatial.md)
+  : Print method for occu_spatial
+
+## Model Specification
+
+Random effects, priors, and spatial components.
+
+- [`occu_re()`](https://gillescolling.com/INLAocc/reference/occu_re.md)
+  : Specify random effects for occupancy or detection process
+- [`occu_community_re()`](https://gillescolling.com/INLAocc/reference/occu_community_re.md)
+  : Create a community-level (multi-species) random effect
+- [`occu_priors()`](https://gillescolling.com/INLAocc/reference/occu_priors.md)
+  : Specify priors for INLA occupancy models (spOccupancy-compatible)
+- [`occu_spatial()`](https://gillescolling.com/INLAocc/reference/occu_spatial.md)
+  : Create SPDE mesh and spatial effect for occupancy models
+
+## Prediction & Derived Quantities
+
+Predict occupancy at new locations, marginal effects, richness.
+
+- [`predict(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/predict.occu_inla.md)
+  : Predict from a fitted occupancy model
+- [`predict(`*`<occu_inla_int>`*`)`](https://gillescolling.com/INLAocc/reference/predict.occu_inla_int.md)
+  : Predict from an integrated occupancy model
+- [`predict(`*`<occu_inla_ms>`*`)`](https://gillescolling.com/INLAocc/reference/predict.occu_inla_ms.md)
+  : Predict from a multi-species occupancy model
+- [`predict(`*`<occu_inla_temporal>`*`)`](https://gillescolling.com/INLAocc/reference/predict.occu_inla_temporal.md)
+  : Predict from a temporal occupancy model
+- [`predict(`*`<occu_inla_jsdm>`*`)`](https://gillescolling.com/INLAocc/reference/predict.occu_inla_jsdm.md)
+  : Predict from a JSDM
+- [`predict_spatial()`](https://gillescolling.com/INLAocc/reference/predict_spatial.md)
+  : Predict occupancy at new spatial locations
+- [`marginal_effect()`](https://gillescolling.com/INLAocc/reference/marginal_effect.md)
+  : Compute marginal effects for a covariate
+- [`richness()`](https://gillescolling.com/INLAocc/reference/richness.md)
+  : Compute species richness from multi-species model
+- [`plot(`*`<occu_prediction>`*`)`](https://gillescolling.com/INLAocc/reference/plot.occu_prediction.md)
+  : Plot predicted effects from an occupancy model
+
+## S3 Methods
+
+Standard R generics for occupancy model objects.
+
+- [`coef(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/coef.occu_inla.md)
+  : Extract model coefficients
+- [`confint(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/confint.occu_inla.md)
+  : Compute credible intervals
+- [`vcov(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/vcov.occu_inla.md)
+  : Approximate variance-covariance matrix
+- [`logLik(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/logLik.occu_inla.md)
+  : Extract log-likelihood
+- [`nobs(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/nobs.occu_inla.md)
+  : Number of observations
+- [`tidy(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/tidy.occu_inla.md)
+  : Tidy model output into a data.frame
+- [`glance(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/glance.occu_inla.md)
+  : Glance at model-level statistics
+- [`ranef(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/ranef.occu_inla.md)
+  : Extract random effects
+- [`update(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/update.occu_inla.md)
+  : Update and refit an occupancy model
+- [`tidy()`](https://gillescolling.com/INLAocc/reference/tidy.md) : Tidy
+  model output into a data.frame
+- [`ranef()`](https://gillescolling.com/INLAocc/reference/ranef.md) :
+  Extract random effects
+- [`glance()`](https://gillescolling.com/INLAocc/reference/glance.md) :
+  Glance at model-level statistics
+- [`` `$`( ``*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/cash-.occu_inla.md)
+  : Access spOccupancy-compatible fields from INLAocc fits
+
+## Summary, Print & Plot
+
+Model output display methods.
+
+- [`summary(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/summary.occu_inla.md)
+  : Summary method for occu_inla fits
+- [`summary(`*`<occu_inla_spatial>`*`)`](https://gillescolling.com/INLAocc/reference/summary.occu_inla_spatial.md)
+  : Summary for spatial occupancy model
+- [`summary(`*`<occu_inla_ms>`*`)`](https://gillescolling.com/INLAocc/reference/summary.occu_inla_ms.md)
+  : Summary for multi-species model
+- [`summary(`*`<occu_inla_int>`*`)`](https://gillescolling.com/INLAocc/reference/summary.occu_inla_int.md)
+  : Summary for integrated occupancy model
+- [`summary(`*`<occu_inla_temporal>`*`)`](https://gillescolling.com/INLAocc/reference/summary.occu_inla_temporal.md)
+  : Summary for temporal occupancy model
+- [`summary(`*`<occu_inla_jsdm>`*`)`](https://gillescolling.com/INLAocc/reference/summary.occu_inla_jsdm.md)
+  : Summary for JSDM
+- [`print(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_inla.md)
+  : Print method for occu_inla
+- [`print(`*`<occu_inla_int>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_inla_int.md)
+  : Print method for integrated occupancy model
+- [`print(`*`<occu_inla_ms>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_inla_ms.md)
+  : Print method for multi-species occupancy model
+- [`print(`*`<occu_inla_temporal>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_inla_temporal.md)
+  : Print method for temporal occupancy model
+- [`print(`*`<occu_inla_jsdm>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_inla_jsdm.md)
+  : Print method for JSDM
+- [`plot(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/plot.occu_inla.md)
+  : Plot diagnostics for occu_inla
+- [`plot(`*`<occu_inla_ms>`*`)`](https://gillescolling.com/INLAocc/reference/plot.occu_inla_ms.md)
+  : Plot diagnostics for multi-species occupancy model
+- [`plot(`*`<occu_inla_temporal>`*`)`](https://gillescolling.com/INLAocc/reference/plot.occu_inla_temporal.md)
+  : Plot diagnostics for temporal occupancy model
+- [`plot(`*`<occu_inla_jsdm>`*`)`](https://gillescolling.com/INLAocc/reference/plot.occu_inla_jsdm.md)
+  : Plot diagnostics for JSDM
+
+## Fitted Values & Residuals
+
+Extract fitted values and residuals for all model types.
+
+- [`fitted(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/fitted.occu_inla.md)
+  : Extract fitted values from an occupancy model
+- [`fitted(`*`<occu_inla_int>`*`)`](https://gillescolling.com/INLAocc/reference/fitted.occu_inla_int.md)
+  : Extract fitted values from an integrated occupancy model
+- [`fitted(`*`<occu_inla_ms>`*`)`](https://gillescolling.com/INLAocc/reference/fitted.occu_inla_ms.md)
+  : Extract fitted values from a multi-species occupancy model
+- [`fitted(`*`<occu_inla_temporal>`*`)`](https://gillescolling.com/INLAocc/reference/fitted.occu_inla_temporal.md)
+  : Extract fitted values from a temporal occupancy model
+- [`fitted(`*`<occu_inla_jsdm>`*`)`](https://gillescolling.com/INLAocc/reference/fitted.occu_inla_jsdm.md)
+  : Extract fitted values from a JSDM
+- [`residuals(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/residuals.occu_inla.md)
+  : Compute residuals for an occupancy model
+- [`residuals(`*`<occu_inla_int>`*`)`](https://gillescolling.com/INLAocc/reference/residuals.occu_inla_int.md)
+  : Compute residuals for an integrated occupancy model
+- [`residuals(`*`<occu_inla_ms>`*`)`](https://gillescolling.com/INLAocc/reference/residuals.occu_inla_ms.md)
+  : Compute residuals for a multi-species occupancy model
+- [`residuals(`*`<occu_inla_temporal>`*`)`](https://gillescolling.com/INLAocc/reference/residuals.occu_inla_temporal.md)
+  : Compute residuals for a temporal occupancy model
+
+## Residual Diagnostics
+
+Simulation-based diagnostics.
+
+- [`simulate(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/simulate.occu_inla.md)
+  : Simulate replicate datasets from a fitted occupancy model
+- [`pitResiduals()`](https://gillescolling.com/INLAocc/reference/pitResiduals.md)
+  : Compute PIT (scaled) residuals for an occupancy model
+- [`testUniformity()`](https://gillescolling.com/INLAocc/reference/testUniformity.md)
+  : Test uniformity of PIT residuals (KS test)
+- [`testDispersion()`](https://gillescolling.com/INLAocc/reference/testDispersion.md)
+  : Test for over- or underdispersion
+- [`testOutliers()`](https://gillescolling.com/INLAocc/reference/testOutliers.md)
+  : Test for outliers (simulation envelope)
+- [`testZeroInflation()`](https://gillescolling.com/INLAocc/reference/testZeroInflation.md)
+  : Test for zero-inflation
+- [`checkModel()`](https://gillescolling.com/INLAocc/reference/checkModel.md)
+  : Visual diagnostic panel for a fitted occupancy model
+- [`dharma()`](https://gillescolling.com/INLAocc/reference/dharma.md) :
+  Create a DHARMa residuals object from a fitted occupancy model
+
+## Spatial & Temporal Diagnostics
+
+Autocorrelation testing and semivariograms.
+
+- [`moranI()`](https://gillescolling.com/INLAocc/reference/moranI.md) :
+  Moran's I test for spatial autocorrelation
+- [`durbinWatson()`](https://gillescolling.com/INLAocc/reference/durbinWatson.md)
+  : Durbin-Watson test for temporal autocorrelation in residuals
+- [`variogram()`](https://gillescolling.com/INLAocc/reference/variogram.md)
+  : Empirical semivariogram of occupancy residuals
+
+## Model Comparison & Averaging
+
+Information criteria, weights, and multi-model inference.
+
+- [`compare_models()`](https://gillescolling.com/INLAocc/reference/compare_models.md)
+  : Compare occupancy models via information criteria
+- [`modelAverage()`](https://gillescolling.com/INLAocc/reference/modelAverage.md)
+  : Model-averaged predictions from multiple occupancy models
+- [`waicOccu()`](https://gillescolling.com/INLAocc/reference/waicOccu.md)
+  : Compute WAIC for occupancy models
+- [`ppcOccu()`](https://gillescolling.com/INLAocc/reference/ppcOccu.md)
+  : Posterior predictive checks for occupancy models
+
+## Post-Hoc Analysis
+
+Secondary analyses on fitted model outputs.
+
+- [`postHocLM()`](https://gillescolling.com/INLAocc/reference/postHocLM.md)
+  : Fit a post-hoc linear model relating covariates to estimated
+  parameters
+- [`getSVCSamples()`](https://gillescolling.com/INLAocc/reference/getSVCSamples.md)
+  : Extract spatially-varying coefficient summaries
+
+## Simulation
+
+Generate synthetic occupancy data for testing.
+
+- [`simulate_occu()`](https://gillescolling.com/INLAocc/reference/simulate_occu.md)
+  : Simulate occupancy data for testing
+- [`simMsOcc()`](https://gillescolling.com/INLAocc/reference/simMsOcc.md)
+  : Simulate multi-species occupancy data (cf. simMsOcc)
+- [`simTOcc()`](https://gillescolling.com/INLAocc/reference/simTOcc.md)
+  : Simulate multi-season occupancy data (cf. simTOcc)
+- [`simTMsOcc()`](https://gillescolling.com/INLAocc/reference/simTMsOcc.md)
+  : Simulate temporal multi-species occupancy data (cf. simTMsOcc)
+- [`simIntOcc()`](https://gillescolling.com/INLAocc/reference/simIntOcc.md)
+  : Simulate integrated (multi-source) occupancy data (cf. simIntOcc)
+- [`simIntMsOcc()`](https://gillescolling.com/INLAocc/reference/simIntMsOcc.md)
+  : Simulate integrated multi-species occupancy data (cf. simIntMsOcc)
+
+# Articles
+
+### Getting Started
+
+- [Quick
+  Start](https://gillescolling.com/INLAocc/articles/quickstart.md):

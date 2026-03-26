@@ -3,7 +3,7 @@
 .RData
 .Ruserdata
 inst/doc
-docs/
+# docs/ — tracked for GitHub Pages
 src/*.o
 src/*.so
 src/*.dll
