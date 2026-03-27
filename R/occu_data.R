@@ -280,11 +280,19 @@ occu_data <- function(df, y, site, visit,
           nm, n_varying
         ))
       }
-      occ_df[[nm]] <- vapply(site_ids, function(sid) {
+      site_vals <- vapply(site_ids, function(sid) {
         v <- vals[sites == sid]
         v <- v[!is.na(v)]
         if (length(v) > 0) v[1] else NA_real_
       }, numeric(1))
+      n_na <- sum(is.na(site_vals))
+      if (n_na > 0 && n_na < N) {
+        warning(sprintf(
+          "'%s' has NAs for %d of %d sites after collapsing visit-rows (no non-NA value found for these sites).",
+          nm, n_na, N
+        ))
+      }
+      occ_df[[nm]] <- site_vals
     }
 
     # Optionally impute remaining NAs
