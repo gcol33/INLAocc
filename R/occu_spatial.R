@@ -45,13 +45,13 @@ occu_spatial <- function(coords,
     offset <- c(extent / 10, extent / 3)
   }
 
-  # Build mesh
-  mesh <- INLA::inla.mesh.2d(
+  # Build mesh (suppressWarnings: inla.mesh.2d deprecated in favour of fmesher)
+  mesh <- suppressWarnings(INLA::inla.mesh.2d(
     loc      = coords,
     max.edge = max.edge,
     cutoff   = cutoff,
     offset   = offset
-  )
+  ))
 
   # SPDE model with PC priors
   spde <- INLA::inla.spde2.pcmatern(
