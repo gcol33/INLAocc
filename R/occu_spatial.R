@@ -363,25 +363,25 @@ project_spatial_grid <- function(spatial_field, spatial,
 #'
 #' @param fit fitted spatial occupancy model (class \code{occu_inla_spatial}
 #'   or multi-species with spatial component)
-#' @param what \code{"psi"} (default): occupancy probability.
+#' @param type \code{"psi"} (default): occupancy probability.
 #'   \code{"sd"}: posterior SD.
 #'   \code{"spatial"}: spatial random effect only.
 #'   \code{"all"}: 2-panel (psi + sd side by side).
 #' @param species for multi-species models, the species name or index
 #' @param n_grid grid resolution per axis (default 100)
 #' @param xlim,ylim coordinate limits (default: data extent)
-#' @param col color palette vector (default chosen per \code{what})
+#' @param col color palette vector (default chosen per \code{type})
 #' @param sites logical: overlay survey sites? (default TRUE)
-#' @param main plot title (default chosen per \code{what})
+#' @param main plot title (default chosen per \code{type})
 #' @param ... passed to \code{image()}
 #'
 #' @return Invisibly, a list with \code{x}, \code{y}, \code{z} (the
-#'   gridded values), \code{what}, \code{zlim}, \code{coords},
+#'   gridded values), \code{type}, \code{zlim}, \code{coords},
 #'   \code{detected}, and \code{col}.
 #'
 #' @export
 occuMap <- function(fit,
-                    what = c("psi", "sd", "spatial", "all"),
+                    type = c("psi", "sd", "spatial", "all"),
                     species = NULL,
                     n_grid = 100L,
                     xlim = NULL, ylim = NULL,
@@ -390,16 +390,16 @@ occuMap <- function(fit,
                     main = NULL,
                     ...) {
 
-  what <- match.arg(what)
+  type <- match.arg(type)
 
   # --- "all" mode: 2-panel ---
-  if (what == "all") {
+  if (type == "all") {
     old_par <- par(mfrow = c(1, 2))
     on.exit(par(old_par))
-    r1 <- occuMap(fit, what = "psi", species = species, n_grid = n_grid,
+    r1 <- occuMap(fit, type = "psi", species = species, n_grid = n_grid,
                   xlim = xlim, ylim = ylim, col = col, sites = sites,
                   main = main, ...)
-    r2 <- occuMap(fit, what = "sd", species = species, n_grid = n_grid,
+    r2 <- occuMap(fit, type = "sd", species = species, n_grid = n_grid,
                   xlim = xlim, ylim = ylim, sites = sites, ...)
     return(invisible(list(psi = r1, sd = r2)))
   }
@@ -413,7 +413,7 @@ occuMap <- function(fit,
                                 xlim = xlim, ylim = ylim)
 
   # --- Build the plotted quantity ---
-  if (what == "psi") {
+  if (type == "psi") {
     # Spatial field + fixed-effects baseline on logit scale
     beta <- v$occ_fit$summary.fixed$mean
     z_logit <- grid$z_mean  # spatial RE on log scale
@@ -429,7 +429,7 @@ occuMap <- function(fit,
       sprintf("Occupancy: %s", v$species)
     } else "Occupancy probability"
 
-  } else if (what == "sd") {
+  } else if (type == "sd") {
     z <- grid$z_sd
     z_label <- "SD"
     default_col <- hcl.colors(100, "YlOrRd")
@@ -483,7 +483,7 @@ occuMap <- function(fit,
     x        = grid$x,
     y        = grid$y,
     z        = z,
-    what     = what,
+    type     = type,
     zlim     = zlim,
     coords   = coords,
     detected = detected,

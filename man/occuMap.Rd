@@ -6,7 +6,7 @@
 \usage{
 occuMap(
   fit,
-  what = c("psi", "sd", "spatial", "all"),
+  type = c("psi", "sd", "spatial", "all"),
   species = NULL,
   n_grid = 100L,
   xlim = NULL,
@@ -21,7 +21,7 @@ occuMap(
 \item{fit}{fitted spatial occupancy model (class \code{occu_inla_spatial}
 or multi-species with spatial component)}
 
-\item{what}{\code{"psi"} (default): occupancy probability.
+\item{type}{\code{"psi"} (default): occupancy probability.
 \code{"sd"}: posterior SD.
 \code{"spatial"}: spatial random effect only.
 \code{"all"}: 2-panel (psi + sd side by side).}
@@ -32,17 +32,17 @@ or multi-species with spatial component)}
 
 \item{xlim, ylim}{coordinate limits (default: data extent)}
 
-\item{col}{color palette vector (default chosen per \code{what})}
+\item{col}{color palette vector (default chosen per \code{type})}
 
 \item{sites}{logical: overlay survey sites? (default TRUE)}
 
-\item{main}{plot title (default chosen per \code{what})}
+\item{main}{plot title (default chosen per \code{type})}
 
 \item{...}{passed to \code{image()}}
 }
 \value{
 Invisibly, a list with \code{x}, \code{y}, \code{z} (the
-gridded values), \code{what}, \code{zlim}, \code{coords},
+gridded values), \code{type}, \code{zlim}, \code{coords},
 \code{detected}, and \code{col}.
 }
 \description{
