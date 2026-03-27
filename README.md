@@ -6,9 +6,9 @@
 
 # INLAocc
 
-**Occupancy models via INLA — a fast alternative to MCMC.**
+**Occupancy models via INLA. A fast alternative to MCMC.**
 
-Fit single-species, multi-species, spatial, temporal, and integrated occupancy models through one function. INLAocc uses an EM algorithm with INLA at each M-step, giving fast and accurate estimates of species occurrence while accounting for imperfect detection.
+Single-species, multi-species, spatial, temporal, and integrated occupancy models through one function. EM algorithm with INLA at the M-step, plus a multiple imputation correction for the coefficient estimates.
 
 ## Quick Start
 
@@ -25,15 +25,17 @@ checkModel(fit)
 
 ## Why INLAocc
 
-Occupancy models separate two entangled processes — where a species actually occurs (occupancy) and where you happen to detect it (detection). Getting this right matters for conservation decisions, but fitting these models with MCMC can be slow, especially for spatial or multi-species extensions.
+Occupancy models separate two processes: where a species occurs and where you detect it. Fitting them with MCMC is slow, especially with spatial or multi-species structure.
 
-The core problem: at sites where you never detected the species, you don't know if it was absent or just missed. MCMC handles this by sampling the latent states directly, which works but is slow. INLAocc instead alternates between two steps: given the current occupancy and detection estimates, compute for each undetected site how likely it is to be truly occupied (E-step). Then, given those occupancy weights, refit the occupancy and detection models with INLA (M-step). Each step uses the output of the other, and the estimates converge in a few iterations. One limitation of plain EM is that each site's occupancy weight is treated as fixed when estimating coefficients — sites don't share information about what drives occurrence. MCMC doesn't have this problem: at each iteration it samples actual presence/absence states for every site, so the coefficient estimates see the full dataset under each plausible configuration of z. The key observation is that MCMC's information sharing comes from one thing: fitting the model repeatedly under different plausible z configurations. You don't need thousands of MCMC iterations to get that — a few imputations are enough if the z probabilities are already good, which they are after EM converges. So the correction works like this: draw a binary present/absent vector from the converged EM weights, refit the model on that vector, repeat a handful of times, and average the coefficient estimates. This is multiple imputation (Rubin, 1987) — a standard technique for missing data, applied here to the latent occupancy states. In benchmarks, the results correlate > 0.99 with full MCMC.
+At sites where you never detected the species, you don't know if it was absent or just missed. MCMC handles this by sampling the latent states directly. INLAocc instead alternates between two steps: given current estimates, compute how likely each undetected site is to be truly occupied (E-step); then refit the occupancy and detection models with INLA using those weights (M-step). The estimates converge in a few iterations.
+
+Plain EM treats each site's occupancy weight as fixed when estimating coefficients, so sites don't share information about what drives occurrence. In MCMC, sites do share: each iteration samples a full present/absent vector and fits coefficients conditional on it, so the estimates see the whole dataset under many plausible z configurations. MCMC's information sharing comes from fitting the model repeatedly under different z. A few imputations are enough if the z probabilities are already good, which they are after EM converges. So the correction draws binary z vectors from the converged weights, refits the model on each, and averages the coefficient estimates. This is multiple imputation (Rubin, 1987), a standard technique for missing data, applied here to the latent occupancy states. In benchmarks, the results correlate > 0.99 with full MCMC.
 
 ## Features
 
 ### Model Types
 
-One `occu()` call handles everything — model type is determined by the arguments you pass:
+Model type is determined by the arguments you pass to `occu()`:
 
 | Call | Description |
 |---|---|
@@ -49,8 +51,6 @@ One `occu()` call handles everything — model type is determined by the argumen
 
 ### Random Effects
 
-Mixed-model formula syntax with native AST parsing:
-
 ```r
 occu(~ elev + (1 | region), ~ effort, data)              # random intercept
 occu(~ elev + (1 + elev | region), ~ effort, data)       # random slope
@@ -60,8 +60,7 @@ occu(~ elev + (1 | site/plot), ~ effort, data)            # nested
 
 ### Diagnostics
 
-All diagnostics run on model residuals — they check whether the fitted model
-captured the structure in the data, or whether patterns remain unexplained.
+All diagnostics run on model residuals. They check whether the fitted model captured the structure in the data, or whether patterns remain unexplained.
 
 ```r
 # Does the model fit? (simulation-based, on residuals)
@@ -164,7 +163,7 @@ sim <- simulate_occu(N = 200, J = 4, spatial_range = 0.2, seed = 123)
 # Auto-scaled mesh from coordinate extent
 fit <- occu(~ occ_x1, ~ det_x1, data = sim$data, spatial = sim$data$coords)
 
-# Control mesh resolution (units match your CRS — metres for UTM)
+# Control mesh resolution (units match your CRS; metres for UTM)
 fit <- occu(~ occ_x1, ~ det_x1, data = sim$data,
             spatial = sim$data$coords,
             spde.args = list(max.edge = c(5000, 15000)))
