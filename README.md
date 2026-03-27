@@ -141,6 +141,17 @@ pak::pak("gcol33/INLAocc")
 
 ## Usage
 
+### From a data.frame
+
+`occu_data()` takes a long-format data.frame (one row per site-visit) and builds the list that `occu()` expects. Three columns are required: a detection column (0/1/NA), a site ID, and a visit number. Everything else is treated as a covariate. Columns that are constant within a site become occupancy covariates; columns that vary become detection covariates.
+
+Sites with fewer visits than the maximum get NA-filled, so unequal survey effort is handled automatically.
+
+```r
+dat <- df |> occu_data(y = "detected", site = "site", visit = "visit")
+fit <- occu(~ elev, ~ effort, data = dat)
+```
+
 ### Single-species with random effects
 
 ```r
