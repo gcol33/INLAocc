@@ -4,7 +4,16 @@
 \alias{occu_data}
 \title{Convert a data.frame to occupancy data}
 \usage{
-occu_data(df, y, site, visit, occ.covs = NULL, det.covs = NULL, coords = NULL)
+occu_data(
+  df,
+  y,
+  site,
+  visit,
+  occ.covs = NULL,
+  det.covs = NULL,
+  coords = NULL,
+  impute = c("none", "mean", "median")
+)
 }
 \arguments{
 \item{df}{a data.frame in long format (one row per site-visit).}
@@ -27,6 +36,12 @@ vary within at least one site are used.}
 
 \item{coords}{character vector of length 2 giving coordinate column
 names, or \code{NULL}.}
+
+\item{impute}{how to handle NAs in site-level covariates after
+collapsing visit-rows.  \code{"none"} (default) leaves NAs as-is.
+\code{"mean"} or \code{"median"} fills remaining NAs with the
+column mean or median.  Only affects site-level (occupancy)
+covariates, not detection covariates or the detection matrix.}
 }
 \value{
 An object of class \code{"occu_data"} ready for

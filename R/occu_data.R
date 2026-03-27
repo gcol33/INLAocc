@@ -166,6 +166,11 @@ occu_format <- function(y, occ.covs = NULL, det.covs = NULL,
 #'   vary within at least one site are used.
 #' @param coords character vector of length 2 giving coordinate column
 #'   names, or \code{NULL}.
+#' @param impute how to handle NAs in site-level covariates after
+#'   collapsing visit-rows.  \code{"none"} (default) leaves NAs as-is.
+#'   \code{"mean"} or \code{"median"} fills remaining NAs with the
+#'   column mean or median.  Only affects site-level (occupancy)
+#'   covariates, not detection covariates or the detection matrix.
 #'
 #' @return An object of class \code{"occu_data"} ready for
 #'   \code{\link{occu}}.
@@ -187,7 +192,9 @@ occu_format <- function(y, occ.covs = NULL, det.covs = NULL,
 #' @export
 occu_data <- function(df, y, site, visit,
                       occ.covs = NULL, det.covs = NULL,
-                      coords = NULL) {
+                      coords = NULL,
+                      impute = c("none", "mean", "median")) {
+  impute <- match.arg(impute)
 
   if (!is.data.frame(df)) stop("df must be a data.frame")
 
@@ -256,12 +263,44 @@ occu_data <- function(df, y, site, visit,
   y_mat <- matrix(NA_integer_, N, J)
   y_mat[cbind(site_map, visits)] <- as.integer(y_vec)
 
-  # Build occ.covs data.frame (site-level: take first value per site)
+  # Build occ.covs data.frame (site-level: first non-NA value per site)
   occ_df <- NULL
   if (!is.null(occ.covs) && length(occ.covs) > 0) {
-    first_row <- !duplicated(sites)
-    occ_df <- df[first_row, occ.covs, drop = FALSE]
-    rownames(occ_df) <- NULL
+    occ_df <- data.frame(row.names = seq_len(N))
+    for (nm in occ.covs) {
+      vals <- df[[nm]]
+      # Check that values are actually constant within each site
+      n_varying <- sum(vapply(split(vals, sites), function(v) {
+        v <- v[!is.na(v)]
+        length(unique(v)) > 1L
+      }, logical(1)))
+      if (n_varying > 0) {
+        warning(sprintf(
+          "'%s' is listed as a site-level covariate but varies within %d site(s). Using first non-NA value per site.",
+          nm, n_varying
+        ))
+      }
+      occ_df[[nm]] <- vapply(site_ids, function(sid) {
+        v <- vals[sites == sid]
+        v <- v[!is.na(v)]
+        if (length(v) > 0) v[1] else NA_real_
+      }, numeric(1))
+    }
+
+    # Optionally impute remaining NAs
+    if (impute != "none") {
+      fn <- if (impute == "mean") mean else median
+      for (nm in occ.covs) {
+        col <- occ_df[[nm]]
+        na_idx <- is.na(col)
+        if (any(na_idx) && !all(na_idx)) {
+          fill <- fn(col, na.rm = TRUE)
+          occ_df[[nm]][na_idx] <- fill
+          message(sprintf("Imputed %d NA(s) in '%s' with %s = %.4f",
+                          sum(na_idx), nm, impute, fill))
+        }
+      }
+    }
   }
 
   # Build det.covs list (each element is N x J matrix)
