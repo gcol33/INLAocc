@@ -7,7 +7,7 @@
 #'   setNames simulate terms update update.formula var vcov
 #' @importFrom Matrix Matrix
 #' @importFrom graphics abline arrows axis barplot hist image legend lines
-#'   par plot points polygon
+#'   mtext par plot points polygon rect segments text
 #' @importFrom grDevices adjustcolor colorRampPalette hcl.colors rgb
 #' @importFrom utils tail
 NULL

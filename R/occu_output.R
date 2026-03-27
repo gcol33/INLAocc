@@ -332,47 +332,7 @@ plot.occu_inla <- function(x, which = 1:4, ...) {
 }
 
 
-#' @noRd
-plot_spatial <- function(x, what = c("psi", "spatial", "z"),
-                         n_grid = 100, ...) {
-  what <- match.arg(what)
-
-  if (what == "psi") {
-    coords <- x$data$coords
-    if (is.null(coords)) stop("No coordinates in model")
-
-    # Scatter plot of estimated psi
-    col_ramp <- colorRampPalette(c("white", "steelblue", "darkblue"))
-    cols <- col_ramp(100)[cut(x$psi_hat, 100)]
-
-    plot(coords[, 1], coords[, 2], pch = 16, col = cols,
-         xlab = "X", ylab = "Y",
-         main = expression("Estimated" ~ psi), ...)
-
-  } else if (what == "spatial") {
-    if (!inherits(x, "occu_inla_spatial")) {
-      stop("Spatial field plot requires occu_inla_spatial object")
-    }
-
-    sf <- extract_spatial_field(x$occ_fit, x$spatial)
-    grid <- project_spatial_grid(sf, x$spatial, n_grid = n_grid)
-
-    image(grid$x, grid$y, grid$z_mean,
-          col = hcl.colors(100, "Viridis"),
-          xlab = "X", ylab = "Y",
-          main = "Spatial Random Field", ...)
-    points(x$data$coords, pch = "+", cex = 0.5)
-
-  } else if (what == "z") {
-    coords <- x$data$coords
-    if (is.null(coords)) stop("No coordinates in model")
-
-    cols <- ifelse(x$z_hat > 0.5, "steelblue", "grey80")
-    plot(coords[, 1], coords[, 2], pch = 16, col = cols,
-         xlab = "X", ylab = "Y",
-         main = "Estimated Occupancy State (z > 0.5)", ...)
-  }
-}
+# plot_spatial removed — use occuMap() instead (R/occu_spatial.R)
 
 
 # =============================================================================
