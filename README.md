@@ -60,31 +60,31 @@ occu(~ elev + (1 | site/plot), ~ effort, data)            # nested
 
 ### Diagnostics
 
-Full diagnostic suite with zero external dependencies:
+All diagnostics run on model residuals — they check whether the fitted model
+captured the structure in the data, or whether patterns remain unexplained.
 
 ```r
-# Simulation-based residual checks
-simulate(fit, nsim = 250)          # posterior predictive simulation
-pitResiduals(fit)                  # PIT scaled residuals
-testUniformity(fit)                # KS test on PIT residuals
-testDispersion(fit)                # over/underdispersion
-testOutliers(fit)                  # simulation envelope test
-testZeroInflation(fit)             # excess zeros
+# Does the model fit? (simulation-based, on residuals)
+testUniformity(fit)                # are residuals uniformly distributed?
+testDispersion(fit)                # more/less variance in residuals than expected?
+testOutliers(fit)                  # sites outside the simulation envelope?
+testZeroInflation(fit)             # more unoccupied sites than the model predicts?
 
-# Spatial / temporal autocorrelation
-moranI(fit)                        # Moran's I (inverse-distance or k-NN)
-durbinWatson(fit)                  # Durbin-Watson for temporal models
-variogram(fit)                     # empirical semivariogram
+# Is there leftover spatial or temporal structure in residuals?
+moranI(fit)                        # Moran's I on occupancy residuals
+durbinWatson(fit)                  # lag-1 autocorrelation across time periods
+variogram(fit)                     # semivariance of residuals vs distance
 
-# GOF and model comparison
-ppcOccu(fit)                       # posterior predictive checks
-waicOccu(fit)                      # WAIC
-AIC(fit); BIC(fit)                 # information criteria
+# One-call panel: QQ plot, residuals vs fitted, dispersion, correlogram
+checkModel(fit)
 
-# One-call diagnostic panel
-checkModel(fit)                    # QQ, residuals, dispersion, correlogram
+# Before fitting: flag identifiability problems in the data
+checkIdentifiability(dat)
+checkIdentifiability(fit)          # also works post-fit (boundary estimates, collapsed REs)
 ```
 
+Also available: `ppcOccu()` (posterior predictive checks), `waicOccu()`,
+`AIC()`, `BIC()`, `pitResiduals()`, `simulate()`.
 If DHARMa is installed, `dharma(fit)` creates a full DHARMa object.
 
 ### Model Selection & Averaging
