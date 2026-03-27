@@ -45,6 +45,12 @@ All benchmarks use simulated data with known true occupancy probabilities. The f
 
 ![Correlation between estimated and true occupancy probabilities on simulated data. All three methods recover the truth comparably; the EM+MI approximation does not sacrifice accuracy for speed.](man/figures/accuracy.png)
 
+### Parameter recovery
+
+Species-specific coefficient recovery from a 10-species community model (N = 1,000 sites). Each point is one species-level coefficient; the dashed line is the 1:1 identity. All three methods recover the occupancy and detection coefficients, with MCMC methods (spOccupancy, Stan) tighter on the line than the EM+MI approximation.
+
+![Estimated vs true species-specific occupancy and detection coefficients from a 10-species community simulation. spOccupancy and Stan track the 1:1 line closely; INLAocc shows more scatter, reflecting the EM approximation. Occupancy probability recovery (previous figure) is less affected because psi integrates over the full linear predictor.](man/figures/parameters.png)
+
 ## Features
 
 ### Model Types
