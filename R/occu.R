@@ -149,7 +149,7 @@ occu <- function(occ.formula, det.formula = NULL, data,
 
   # --- 7. Dispatch to engine ---
   t0 <- proc.time()
-  engine_fn <- match.fun(spec$engine)
+  engine_fn <- get(spec$engine, envir = asNamespace("INLAocc"), mode = "function")
   result <- engine_fn(args)
 
   # --- 8. Store metadata and assign class ---

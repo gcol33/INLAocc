@@ -602,7 +602,8 @@ engine_ms <- function(args) {
   n_cores <- getOption("INLAocc.cores", 1L)
   if (n_cores > 1 && requireNamespace("parallel", quietly = TRUE)) {
     if (args$verbose >= 1) cat(sprintf("  Using %d cores\n", min(n_cores, n_sp)))
-    cl <- parallel::makeCluster(min(n_cores, n_sp))
+    cl <- parallel::makeCluster(min(n_cores, n_sp),
+                                    port = sample(49152:65535, 1))
     on.exit(parallel::stopCluster(cl), add = TRUE)
     parallel::clusterExport(cl, c("args", "data", "species_names"),
                              envir = environment())
@@ -772,7 +773,8 @@ engine_ms_temporal <- function(args) {
     if (args$verbose >= 1)
       cat(sprintf("  Using %d cores\n", min(n_cores, n_sp)))
     # On Windows, use socket cluster
-    cl <- parallel::makeCluster(min(n_cores, n_sp))
+    cl <- parallel::makeCluster(min(n_cores, n_sp),
+                                    port = sample(49152:65535, 1))
     on.exit(parallel::stopCluster(cl), add = TRUE)
     parallel::clusterEvalQ(cl, suppressMessages(library(INLAocc)))
     parallel::clusterExport(cl, c("args", "y", "data", "sp_names"),

@@ -1,0 +1,139 @@
+# =============================================================================
+# Create the scaling comparison figure for INLAocc README
+# Reads single-species + multi-species results, writes man/figures/benchmark
+# =============================================================================
+
+library(ggplot2)
+library(scales)
+library(svglite)
+
+root <- "C:/Users/Gilles Colling/Documents/dev/INLAocc"
+
+# --- Load and merge results ---
+df1 <- read.csv(file.path(root, "benchmark", "scaling_results.csv"),
+                stringsAsFactors = FALSE)
+ms_file <- file.path(root, "benchmark", "scaling_results_ms.csv")
+if (file.exists(ms_file)) {
+  df2 <- read.csv(ms_file, stringsAsFactors = FALSE)
+  df  <- rbind(df1, df2)
+} else {
+  df <- df1
+}
+
+# --- Map parallel multi-species into the same panel with a distinct method ---
+par_rows <- df$type == "Multi-species (parallel)"
+df$method[par_rows] <- "INLAocc (parallel)"
+df$type[par_rows]   <- "Multi-species"
+
+# --- Colours (Wong palette, colourblind-safe) ---
+method_cols  <- c(INLAocc = "#0072B2", `INLAocc (parallel)` = "#56B4E9",
+                  spOccupancy = "#D55E00", Stan = "#CC79A7")
+method_shape <- c(INLAocc = 16, `INLAocc (parallel)` = 1,
+                  spOccupancy = 15, Stan = 17)
+method_lty   <- c(INLAocc = "solid", `INLAocc (parallel)` = "dashed",
+                  spOccupancy = "solid", Stan = "solid")
+
+method_levels <- c("INLAocc", "INLAocc (parallel)", "spOccupancy", "Stan")
+df$method <- factor(df$method, levels = method_levels)
+
+# --- Facet labels ---
+panel_map <- c(
+  "Non-spatial"   = "Non-spatial",
+  "Spatial"       = "Spatial (SPDE / NNGP)",
+  "Multi-species" = "Multi-species (10 spp.)"
+)
+df$panel <- panel_map[df$type]
+panel_order <- intersect(panel_map, unique(df$panel))
+df$panel <- factor(df$panel, levels = panel_order)
+
+# --- Speedup annotations ---
+# For the MS panel, annotate parallel vs spOcc if parallel data exists
+anno_list <- lapply(split(df, df$panel), function(sub) {
+  # Prefer parallel INLAocc for the bracket if available
+  inla_method <- if (any(sub$method == "INLAocc (parallel)"))
+    "INLAocc (parallel)" else "INLAocc"
+
+  shared <- intersect(
+    sub$N[sub$method == inla_method],
+    sub$N[sub$method == "spOccupancy"]
+  )
+  if (length(shared) == 0) return(NULL)
+  max_N   <- max(shared)
+  t_inla  <- sub$time[sub$method == inla_method    & sub$N == max_N]
+  t_spocc <- sub$time[sub$method == "spOccupancy"  & sub$N == max_N]
+  if (length(t_inla) == 0 || length(t_spocc) == 0) return(NULL)
+  speedup <- t_spocc / t_inla
+  data.frame(
+    panel = sub$panel[1],
+    N     = max_N,
+    y     = sqrt(t_inla * t_spocc),
+    ymin  = t_inla,
+    ymax  = t_spocc,
+    label = sprintf("%.0f\u00d7", speedup),
+    stringsAsFactors = FALSE
+  )
+})
+anno <- do.call(rbind, anno_list)
+anno$panel <- factor(anno$panel, levels = levels(df$panel))
+
+# --- Build figure ---
+p <- ggplot(df, aes(x = N, y = time, colour = method, shape = method,
+                    linetype = method)) +
+  geom_line(linewidth = 0.9, alpha = 0.85) +
+  geom_point(size = 3) +
+
+  # bracket
+  geom_segment(data = anno, inherit.aes = FALSE,
+               aes(x = N * 1.15, xend = N * 1.15, y = ymin, yend = ymax),
+               colour = "grey50", linewidth = 0.4,
+               arrow = arrow(ends = "both", length = unit(0.06, "inches"),
+                             type = "open")) +
+  # speedup label
+  geom_label(data = anno, inherit.aes = FALSE,
+             aes(x = N * 1.15, y = y, label = label),
+             size = 3.1, fontface = "bold",
+             colour = "grey25", fill = "white",
+             linewidth = 0, label.padding = unit(0.15, "lines")) +
+
+  facet_wrap(~ panel, scales = "free_x", nrow = 1) +
+  scale_x_log10(
+    labels = label_comma(),
+    expand = expansion(mult = c(0.05, 0.12))
+  ) +
+  scale_y_log10(
+    labels = label_comma(suffix = "s"),
+    breaks = c(1, 3, 10, 30, 100, 300, 1000, 3000)
+  ) +
+  scale_colour_manual(values = method_cols) +
+  scale_shape_manual(values = method_shape) +
+  scale_linetype_manual(values = method_lty) +
+  labs(
+    x      = "Number of sites",
+    y      = "Computation time",
+    colour = NULL, shape = NULL, linetype = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.background   = element_rect(fill = "white", colour = NA),
+    panel.background  = element_rect(fill = "white", colour = NA),
+    panel.grid.major  = element_line(colour = "grey92", linewidth = 0.4),
+    panel.grid.minor  = element_blank(),
+    strip.text        = element_text(face = "bold", size = 11),
+    legend.position   = "top",
+    legend.text       = element_text(size = 11),
+    legend.key.width  = unit(1.8, "lines"),
+    axis.title        = element_text(size = 11),
+    plot.margin       = margin(10, 14, 6, 6)
+  )
+
+# --- Save ---
+dir.create(file.path(root, "man", "figures"), showWarnings = FALSE, recursive = TRUE)
+
+ggsave(file.path(root, "man", "figures", "benchmark.svg"),
+       p, width = 12, height = 4.2, device = svglite)
+ggsave(file.path(root, "man", "figures", "benchmark.png"),
+       p, width = 12, height = 4.2, dpi = 200)
+
+cat("Saved:\n")
+cat("  man/figures/benchmark.svg\n")
+cat("  man/figures/benchmark.png\n")

@@ -29,7 +29,15 @@ Occupancy models separate two processes: where a species occurs and where you de
 
 At sites where you never detected the species, you don't know if it was absent or just missed. MCMC handles this by sampling the latent states directly. INLAocc instead alternates between two steps: given current estimates, compute how likely each undetected site is to be truly occupied (E-step); then refit the occupancy and detection models with INLA using those weights (M-step). The estimates converge in a few iterations.
 
-Plain EM treats each site's occupancy weight as fixed when estimating coefficients, so sites don't share information about what drives occurrence. In MCMC, sites do share: each iteration samples a full present/absent vector and fits coefficients conditional on it, so the estimates see the whole dataset under many plausible z configurations. MCMC's information sharing comes from fitting the model repeatedly under different z. A few imputations are enough if the z probabilities are already good, which they are after EM converges. So the correction draws binary z vectors from the converged weights, refits the model on each, and averages the coefficient estimates. This is multiple imputation (Rubin, 1987), a standard technique for missing data, applied here to the latent occupancy states. In benchmarks, the results correlate > 0.99 with full MCMC.
+Plain EM (Dempster, Laird & Rubin, 1977) treats each site's occupancy weight as fixed when estimating coefficients, so sites don't share information about what drives occurrence. In MCMC, sites do share: each iteration samples a full present/absent vector and fits coefficients conditional on it, so the estimates see the whole dataset under many plausible z configurations. MCMC's information sharing comes from fitting the model repeatedly under different z. A few imputations are enough if the z probabilities are already good, which they are after EM converges. So the correction draws binary z vectors from the converged weights, refits the model on each, and averages the coefficient estimates using Rubin's combining rules (Rubin, 1987). Multiple imputation is a standard technique for missing data in survey statistics; applying it to latent occupancy states as a post-EM debiasing step is, to our knowledge, novel. In benchmarks, the corrected estimates correlate > 0.99 with full MCMC.
+
+### Speed
+
+MCMC runtime grows linearly with the number of sites. INLAocc stays nearly flat regardless of dataset size. The reason is the EM factorization: each iteration splits the occupancy model into two independent GLMMs (occupancy and detection), which INLA solves in near-linear time via sparse precision matrices. MCMC cannot factorize this way because it must jointly sample the latent presence/absence states alongside all parameters. For multi-species models the advantage compounds further, since INLAocc fits each species independently while MCMC must sample the full community in one chain.
+
+Each GLMM is fitted with INLA, which is itself a Bayesian method: it returns full posterior marginals for every parameter, not point estimates. The EM approximation enters only in how the latent occupancy states are handled. The multiple imputation correction recovers the information loss: once the EM weights have converged, binary z vectors are drawn from the posterior occupancy probabilities and the model is refit on each, pooling the coefficient estimates with Rubin's rules. This is the same principled framework used for missing data in survey statistics. In benchmarks, the corrected estimates correlate > 0.99 with full MCMC posteriors.
+
+![Computation time vs number of sites for INLAocc, spOccupancy, and Stan across three model types. Spatial models use SPDE (INLAocc) and NNGP (spOccupancy). Multi-species benchmark uses 10 species. Dashed line: parallel species fitting via options(INLAocc.cores). MCMC cannot parallelize across species because it samples the full community jointly.](man/figures/benchmark.png)
 
 ## Features
 
@@ -230,6 +238,12 @@ I'm a PhD student who builds R packages in my free time because I believe good t
 If this package saved you some time, buying me a coffee is a nice way to say thanks. It helps with my coffee addiction.
 
 [![Buy Me A Coffee](https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/gcol33)
+
+## References
+
+- Dempster, A. P., Laird, N. M. & Rubin, D. B. (1977). Maximum likelihood from incomplete data via the EM algorithm. *Journal of the Royal Statistical Society: Series B*, 39(1), 1--38.
+- Rubin, D. B. (1987). *Multiple Imputation for Nonresponse in Surveys*. Wiley.
+- Rue, H., Martino, S. & Chopin, N. (2009). Approximate Bayesian inference for latent Gaussian models by using integrated nested Laplace approximations. *Journal of the Royal Statistical Society: Series B*, 71(2), 319--392.
 
 ## License
 
