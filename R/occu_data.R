@@ -99,6 +99,26 @@ occu_format <- function(y, occ.covs = NULL, det.covs = NULL,
     }
   }
 
+  # --- Check for NAs in covariates ---
+  if (!is.null(occ.covs)) {
+    na_cols <- names(occ.covs)[vapply(occ.covs, function(x) any(is.na(x)), logical(1))]
+    if (length(na_cols) > 0) {
+      warning(sprintf(
+        "NAs found in occupancy covariates: %s. Sites with NA covariates will be dropped from the model.",
+        paste(na_cols, collapse = ", ")
+      ))
+    }
+  }
+  if (!is.null(det.covs)) {
+    na_det <- names(det.covs)[vapply(det.covs, function(x) any(is.na(x)), logical(1))]
+    if (length(na_det) > 0) {
+      warning(sprintf(
+        "NAs found in detection covariates: %s. Visits with NA covariates will be dropped from the model.",
+        paste(na_det, collapse = ", ")
+      ))
+    }
+  }
+
   # --- Derived quantities ---
   n_visits <- rowSums(!is.na(y))
   n_det    <- rowSums(y, na.rm = TRUE)

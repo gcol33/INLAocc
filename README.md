@@ -145,12 +145,15 @@ pak::pak("gcol33/INLAocc")
 
 `occu_data()` takes a long-format data.frame (one row per site-visit) and builds the list that `occu()` expects. Three columns are required: a detection column (0/1/NA), a site ID, and a visit number. Everything else is treated as a covariate. Columns that are constant within a site become occupancy covariates; columns that vary become detection covariates.
 
-Sites with fewer visits than the maximum get NA-filled, so unequal survey effort is handled automatically.
-
 ```r
 dat <- df |> occu_data(y = "detected", site = "site", visit = "visit")
 fit <- occu(~ elev, ~ effort, data = dat)
 ```
+
+**How NAs are handled:**
+
+- **Detection matrix (y):** NA means "not surveyed." These cells are excluded from the likelihood. Sites with fewer visits than the maximum are NA-filled automatically, so unequal survey effort works out of the box.
+- **Covariates:** NAs in occupancy covariates drop the entire site. NAs in detection covariates drop that visit. A warning is issued at data formatting time so you know before fitting.
 
 ### Single-species with random effects
 
