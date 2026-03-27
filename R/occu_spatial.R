@@ -45,13 +45,13 @@ occu_spatial <- function(coords,
     offset <- c(extent / 10, extent / 3)
   }
 
-  # Build mesh (suppressWarnings: inla.mesh.2d deprecated in favour of fmesher)
-  mesh <- suppressWarnings(INLA::inla.mesh.2d(
+  # Build mesh
+  mesh <- fmesher::fm_mesh_2d_inla(
     loc      = coords,
     max.edge = max.edge,
     cutoff   = cutoff,
     offset   = offset
-  ))
+  )
 
   # SPDE model with PC priors
   spde <- INLA::inla.spde2.pcmatern(
@@ -62,7 +62,7 @@ occu_spatial <- function(coords,
   )
 
   # Projection matrix: maps mesh nodes -> observation locations
-  A <- INLA::inla.spde.make.A(mesh = mesh, loc = coords)
+  A <- fmesher::fm_basis(mesh, loc = coords)
 
   out <- list(
     mesh        = mesh,
@@ -222,7 +222,7 @@ build_spatial_stack <- function(df, spatial, site_col = "site",
 predict_spatial_A <- function(spatial, newcoords) {
 
   if (!is.matrix(newcoords)) newcoords <- as.matrix(newcoords)
-  INLA::inla.spde.make.A(mesh = spatial$mesh, loc = newcoords)
+  fmesher::fm_basis(spatial$mesh, loc = newcoords)
 }
 
 
@@ -256,14 +256,14 @@ project_spatial_grid <- function(spatial_field, spatial,
   if (is.null(xlim)) xlim <- range(coords[, 1])
   if (is.null(ylim)) ylim <- range(coords[, 2])
 
-  proj <- INLA::inla.mesh.projector(
+  proj <- fmesher::fm_evaluator(
     spatial$mesh,
     xlim = xlim, ylim = ylim,
     dims = c(n_grid, n_grid)
   )
 
-  z_mean <- INLA::inla.mesh.project(proj, spatial_field$mean)
-  z_sd   <- INLA::inla.mesh.project(proj, spatial_field$sd)
+  z_mean <- fmesher::fm_evaluate(proj, spatial_field$mean)
+  z_sd   <- fmesher::fm_evaluate(proj, spatial_field$sd)
 
   list(
     x      = proj$x,
