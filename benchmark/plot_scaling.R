@@ -1,12 +1,12 @@
 # =============================================================================
-# Create the scaling comparison figure for INLAocc README
-# Top row: computation time.  Bottom row: accuracy (correlation with truth).
+# Create two benchmark figures for INLAocc README
+#   1. man/figures/benchmark.png    — computation time
+#   2. man/figures/accuracy.png     — correlation with truth
 # =============================================================================
 
 library(ggplot2)
 library(scales)
 library(svglite)
-library(patchwork)
 
 root <- "C:/Users/Gilles Colling/Documents/dev/INLAocc"
 
@@ -47,7 +47,26 @@ df$panel <- panel_map[df$type]
 panel_order <- intersect(panel_map, unique(df$panel))
 df$panel <- factor(df$panel, levels = panel_order)
 
-# --- Speedup annotations (bracket at rightmost shared N per panel) ---
+# --- Shared theme ---
+base_theme <- theme_minimal(base_size = 12) +
+  theme(
+    plot.background   = element_rect(fill = "white", colour = NA),
+    panel.background  = element_rect(fill = "white", colour = NA),
+    panel.grid.major  = element_line(colour = "grey92", linewidth = 0.4),
+    panel.grid.minor  = element_blank(),
+    strip.text        = element_text(face = "bold", size = 11),
+    legend.position   = "top",
+    legend.text       = element_text(size = 11),
+    legend.key.width  = unit(1.8, "lines"),
+    axis.title        = element_text(size = 11),
+    plot.margin       = margin(10, 14, 6, 6)
+  )
+
+# =========================================================================
+# Figure 1: Computation time
+# =========================================================================
+
+# Speedup annotations
 anno_list <- lapply(split(df, df$panel), function(sub) {
   inla_method <- if (any(sub$method == "INLAocc (parallel)"))
     "INLAocc (parallel)" else "INLAocc"
@@ -70,7 +89,6 @@ anno_list <- lapply(split(df, df$panel), function(sub) {
 anno <- do.call(rbind, anno_list)
 anno$panel <- factor(anno$panel, levels = levels(df$panel))
 
-# --- Top row: computation time ---
 p_time <- ggplot(df, aes(x = N, y = time, colour = method, shape = method,
                          linetype = method)) +
   geom_line(linewidth = 0.9, alpha = 0.85) +
@@ -93,24 +111,14 @@ p_time <- ggplot(df, aes(x = N, y = time, colour = method, shape = method,
   scale_colour_manual(values = method_cols) +
   scale_shape_manual(values = method_shape) +
   scale_linetype_manual(values = method_lty) +
-  labs(x = NULL, y = "Computation time",
+  labs(x = "Number of sites", y = "Computation time",
        colour = NULL, shape = NULL, linetype = NULL) +
-  theme_minimal(base_size = 12) +
-  theme(
-    plot.background   = element_rect(fill = "white", colour = NA),
-    panel.background  = element_rect(fill = "white", colour = NA),
-    panel.grid.major  = element_line(colour = "grey92", linewidth = 0.4),
-    panel.grid.minor  = element_blank(),
-    strip.text        = element_text(face = "bold", size = 11),
-    legend.position   = "top",
-    legend.text       = element_text(size = 11),
-    legend.key.width  = unit(1.8, "lines"),
-    axis.title        = element_text(size = 11),
-    axis.text.x       = element_blank(),
-    plot.margin       = margin(10, 14, 0, 6)
-  )
+  base_theme
 
-# --- Bottom row: accuracy (correlation with truth) ---
+# =========================================================================
+# Figure 2: Accuracy (correlation with truth)
+# =========================================================================
+
 # Drop parallel from accuracy (same model, same accuracy as sequential)
 df_acc <- df[df$method != "INLAocc (parallel)" & !is.na(df$cor_psi), ]
 
@@ -124,31 +132,24 @@ p_acc <- ggplot(df_acc, aes(x = N, y = cor_psi, colour = method, shape = method)
                      labels = function(x) sprintf("%.1f", x)) +
   scale_colour_manual(values = method_cols) +
   scale_shape_manual(values = method_shape) +
-  labs(x = "Number of sites", y = "Cor(\u03C8, truth)",
+  labs(x = "Number of sites",
+       y = expression(Cor(hat(psi), psi[true])),
        colour = NULL, shape = NULL) +
-  theme_minimal(base_size = 12) +
-  theme(
-    plot.background   = element_rect(fill = "white", colour = NA),
-    panel.background  = element_rect(fill = "white", colour = NA),
-    panel.grid.major  = element_line(colour = "grey92", linewidth = 0.4),
-    panel.grid.minor  = element_blank(),
-    strip.text        = element_blank(),
-    legend.position   = "none",
-    axis.title        = element_text(size = 11),
-    plot.margin       = margin(2, 14, 6, 6)
-  )
-
-# --- Combine ---
-p <- p_time / p_acc + plot_layout(heights = c(3, 1.5))
+  base_theme
 
 # --- Save ---
 dir.create(file.path(root, "man", "figures"), showWarnings = FALSE, recursive = TRUE)
 
 ggsave(file.path(root, "man", "figures", "benchmark.svg"),
-       p, width = 12, height = 6.5, device = svglite)
+       p_time, width = 12, height = 4.2, device = svglite)
 ggsave(file.path(root, "man", "figures", "benchmark.png"),
-       p, width = 12, height = 6.5, dpi = 200)
+       p_time, width = 12, height = 4.2, dpi = 200)
+
+ggsave(file.path(root, "man", "figures", "accuracy.svg"),
+       p_acc, width = 12, height = 4.2, device = svglite)
+ggsave(file.path(root, "man", "figures", "accuracy.png"),
+       p_acc, width = 12, height = 4.2, dpi = 200)
 
 cat("Saved:\n")
-cat("  man/figures/benchmark.svg\n")
-cat("  man/figures/benchmark.png\n")
+cat("  man/figures/benchmark.svg / .png\n")
+cat("  man/figures/accuracy.svg / .png\n")

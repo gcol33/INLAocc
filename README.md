@@ -37,7 +37,13 @@ Each submodel is fitted with INLA (Rue, Martino & Chopin, 2009), which is itself
 
 MCMC runtime grows linearly with the number of sites. INLAocc stays nearly flat. The reason is the EM factorization: each iteration splits the occupancy model into two independent GLMMs, which INLA solves in near-linear time via sparse precision matrices. MCMC cannot factorize this way because it must jointly sample the latent states alongside all parameters. For multi-species models the advantage compounds further, since INLAocc fits each species independently while MCMC must sample the full community in one chain.
 
-![Top: computation time. Bottom: correlation with true occupancy probabilities (simulated data). Stan is absent from the spatial panel because it lacks O(N) spatial approximations (SPDE, NNGP). Dashed line: parallel species fitting via options(INLAocc.cores); MCMC cannot parallelize across species because it samples the full community jointly.](man/figures/benchmark.png)
+![Computation time vs number of sites. Stan is absent from the spatial panel because it lacks O(N) spatial approximations (SPDE, NNGP). Dashed line: parallel species fitting via options(INLAocc.cores); MCMC cannot parallelize across species because it samples the full community jointly.](man/figures/benchmark.png)
+
+### Accuracy
+
+All benchmarks use simulated data with known true occupancy probabilities. The figure below shows the correlation between estimated and true site-level occupancy across all three model types. INLAocc matches MCMC accuracy at every scale tested.
+
+![Correlation between estimated and true occupancy probabilities on simulated data. All three methods recover the truth comparably; the EM+MI approximation does not sacrifice accuracy for speed.](man/figures/accuracy.png)
 
 ## Features
 
