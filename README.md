@@ -8,7 +8,7 @@
 
 **Occupancy models via INLA. A fast alternative to MCMC.**
 
-Single-species, multi-species, spatial, temporal, and integrated occupancy models through one function. EM algorithm with INLA at the M-step, plus a multiple imputation correction for the coefficient estimates.
+Single-species, multi-species, spatial, temporal, and integrated occupancy models through one function. EM algorithm with INLA at the M-step, plus a Gibbs-style data augmentation correction that jointly debiases both occupancy and detection coefficients.
 
 ## Quick Start
 
@@ -29,9 +29,11 @@ Occupancy models separate two processes: where a species occurs and where you de
 
 At sites where you never detected the species, you don't know if it was absent or just missed. MCMC handles this by sampling the latent states directly. INLAocc instead alternates between two steps: given current estimates, compute how likely each undetected site is to be truly occupied (E-step); then refit the occupancy and detection models with INLA using those weights (M-step). The estimates converge in a few iterations.
 
-Plain EM (Dempster, Laird & Rubin, 1977) treats each site's occupancy weight as fixed when estimating coefficients, so sites don't share information about what drives occurrence. In MCMC, sites do share: each iteration samples a full present/absent vector and fits coefficients conditional on it, so the estimates see the whole dataset under many plausible z configurations. A few imputations are enough to recover this information sharing, if the z probabilities are already good — which they are after EM converges. So the correction draws binary z vectors from the converged weights, refits the model on each, and pools the coefficient estimates using Rubin's combining rules (Rubin, 1987). Multiple imputation is a standard technique for missing data in survey statistics; applying it to latent occupancy states as a post-EM debiasing step is, to our knowledge, novel.
+Plain EM (Dempster, Laird & Rubin, 1977) treats each site's occupancy weight as fixed when estimating coefficients. The soft weights attenuate both occupancy and detection coefficients toward zero. MCMC avoids this by sampling a full present/absent vector at each iteration and fitting coefficients conditional on it.
 
-Each submodel is fitted with INLA (Rue, Martino & Chopin, 2009), which is itself a Bayesian method: it returns full posterior marginals for every parameter, not point estimates. The EM approximation enters only in how the latent occupancy states are handled; the MI correction recovers the gap. In benchmarks, the corrected estimates correlate > 0.99 with full MCMC posteriors.
+INLAocc recovers this with a Gibbs-style data augmentation step after the EM converges. The correction alternates between sampling hard binary occupancy states from the converged posterior weights, refitting the occupancy model on the sampled states, and refitting the detection model on the subset of sites sampled as occupied. After a short burn-in, the chain stabilizes and the draws are pooled using Rubin's combining rules (Rubin, 1987). This is the Data Augmentation algorithm (Tanner & Wong, 1987) with INLA as the conditional sampler — it jointly debiases both submodels without the circular dependency that plagues sequential correction.
+
+Each submodel is fitted with INLA (Rue, Martino & Chopin, 2009), which is itself a Bayesian method: it returns full posterior marginals for every parameter, not point estimates. The EM approximation enters only in how the latent occupancy states are handled; the Gibbs correction recovers the gap. In benchmarks, the corrected estimates correlate > 0.99 with full MCMC posteriors.
 
 ### Speed
 
@@ -47,9 +49,15 @@ All benchmarks use simulated data with known true occupancy probabilities. The f
 
 ### Parameter recovery
 
-Species-specific coefficient recovery from a 10-species community model (N = 1,000 sites). Each point is one species-level coefficient; the dashed line is the 1:1 identity. All three methods recover the occupancy and detection coefficients, with MCMC methods (spOccupancy, Stan) tighter on the line than the EM+MI approximation.
+Species-specific coefficient recovery from a 10-species community model (N = 1,000 sites). Each point is one species-level coefficient; the dashed line is the 1:1 identity. The Gibbs data augmentation correction brings INLAocc's coefficient recovery in line with full MCMC methods.
 
-![Estimated vs true species-specific occupancy and detection coefficients from a 10-species community simulation. spOccupancy and Stan track the 1:1 line closely; INLAocc shows more scatter, reflecting the EM approximation. Occupancy probability recovery (previous figure) is less affected because psi integrates over the full linear predictor.](man/figures/parameters.png)
+| Method | Correlation | RMSE |
+|--------|:-----------:|:----:|
+| INLAocc | 0.991 | 0.099 |
+| spOccupancy | 0.995 | 0.071 |
+| Stan | 0.966 | 0.185 |
+
+![Estimated vs true species-specific occupancy and detection coefficients from a 10-species community simulation. All three methods track the 1:1 line closely.](man/figures/parameters.png)
 
 ## Features
 
@@ -254,6 +262,7 @@ If this package saved you some time, buying me a coffee is a nice way to say tha
 ## References
 
 - Dempster, A. P., Laird, N. M. & Rubin, D. B. (1977). Maximum likelihood from incomplete data via the EM algorithm. *Journal of the Royal Statistical Society: Series B*, 39(1), 1--38.
+- Tanner, M. A. & Wong, W. H. (1987). The calculation of posterior distributions by data augmentation. *Journal of the American Statistical Association*, 82(398), 528--540.
 - Rubin, D. B. (1987). *Multiple Imputation for Nonresponse in Surveys*. Wiley.
 - Rue, H., Martino, S. & Chopin, N. (2009). Approximate Bayesian inference for latent Gaussian models by using integrated nested Laplace approximations. *Journal of the Royal Statistical Society: Series B*, 71(2), 319--392.
 

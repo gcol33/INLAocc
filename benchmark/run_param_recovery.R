@@ -4,7 +4,7 @@
 # Saves benchmark/param_recovery.csv
 # =============================================================================
 
-library(INLAocc)
+devtools::load_all("C:/Users/Gilles Colling/Documents/dev/INLAocc")
 library(spOccupancy)
 library(cmdstanr)
 

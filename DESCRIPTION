@@ -1,6 +1,6 @@
 Package: INLAocc
 Title: Occupancy Models via Integrated Nested Laplace Approximation
-Version: 0.1.0
+Version: 0.3.0
 Authors@R:
     person("Gilles", "Colling", email = "gilles.colling051@gmail.com",
            role = c("aut", "cre", "cph"),

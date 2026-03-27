@@ -1,18 +1,9 @@
 "N","type","method","time","cor_psi"
-100,"Multi-species","INLAocc",148.18,0.6162
-100,"Multi-species","spOccupancy",19.2,0.6135
-300,"Multi-species","INLAocc",149.31,0.7799
-300,"Multi-species","spOccupancy",57.5,0.7916
-1000,"Multi-species","INLAocc",145.26,0.7838
-1000,"Multi-species","spOccupancy",206.97,0.7964
-3000,"Multi-species","INLAocc",175.82,0.9792
-3000,"Multi-species","spOccupancy",551.31,1
-10000,"Multi-species","INLAocc",226.92,0.9779
-10000,"Multi-species","spOccupancy",1900.37,1
-1000,"Multi-species (parallel)","INLAocc",36.27,0.7819
-3000,"Multi-species (parallel)","INLAocc",30.05,0.9786
-10000,"Multi-species (parallel)","INLAocc",36.05,0.9779
-100,"Multi-species","Stan",81.92,0.7849
-300,"Multi-species","Stan",241.06,0.7913
-1000,"Multi-species","Stan",567.31,0.797
-3000,"Multi-species","Stan",3185.09,1
+100,"Multi-species","INLAocc",131.4,0.6145
+100,"Multi-species","spOccupancy",6.99000000000001,0.657
+300,"Multi-species","INLAocc",123.66,0.7958
+300,"Multi-species","spOccupancy",20.92,0.7938
+1000,"Multi-species","INLAocc",117.08,0.7968
+1000,"Multi-species","spOccupancy",76.03,0.7951
+3000,"Multi-species","INLAocc",142.48,0.9926
+3000,"Multi-species","spOccupancy",206.11,0.9999

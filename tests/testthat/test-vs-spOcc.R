@@ -15,14 +15,14 @@ test_that("INLAocc matches spOccupancy on basic occupancy model", {
   )
 
   # Fit with spOccupancy
-  fit_sp <- spOccupancy::PGOcc(
+  fit_sp <- suppressWarnings(spOccupancy::PGOcc(
     occ.formula = ~ occ_cov1, det.formula = ~ det_cov1,
     data = data_list, n.samples = 10000, n.burn = 5000,
     n.thin = 5, n.chains = 1, verbose = FALSE
-  )
+  ))
 
   # Fit with INLAocc
-  fit_inla <- occu_inla(
+  fit_inla <- occu(
     occ.formula = ~ occ_cov1, det.formula = ~ det_cov1,
     data = data_list, verbose = 0
   )
@@ -67,7 +67,7 @@ test_that("INLAocc recovers random effect variance", {
     det.covs = list(det_cov1 = sim$X.p[, , 2])
   )
 
-  fit <- occu_inla(
+  fit <- occu(
     occ.formula = ~ occ_cov1 + (1 | group),
     det.formula = ~ det_cov1,
     data = data_list, verbose = 0
