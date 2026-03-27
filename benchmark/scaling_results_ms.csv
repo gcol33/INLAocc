@@ -12,3 +12,6 @@
 1000,"Multi-species (parallel)","INLAocc",36.27,0.7819
 3000,"Multi-species (parallel)","INLAocc",30.05,0.9786
 10000,"Multi-species (parallel)","INLAocc",36.05,0.9779
+100,"Multi-species","Stan",81.92,0.7849
+300,"Multi-species","Stan",241.06,0.7913
+1000,"Multi-species","Stan",567.31,0.797

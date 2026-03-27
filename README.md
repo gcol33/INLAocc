@@ -37,7 +37,7 @@ MCMC runtime grows linearly with the number of sites. INLAocc stays nearly flat 
 
 Each GLMM is fitted with INLA, which is itself a Bayesian method: it returns full posterior marginals for every parameter, not point estimates. The EM approximation enters only in how the latent occupancy states are handled. The multiple imputation correction recovers the information loss: once the EM weights have converged, binary z vectors are drawn from the posterior occupancy probabilities and the model is refit on each, pooling the coefficient estimates with Rubin's rules. This is the same principled framework used for missing data in survey statistics. In benchmarks, the corrected estimates correlate > 0.99 with full MCMC posteriors.
 
-![Computation time vs number of sites for INLAocc, spOccupancy, and Stan across three model types. Spatial models use SPDE (INLAocc) and NNGP (spOccupancy). Multi-species benchmark uses 10 species. Dashed line: parallel species fitting via options(INLAocc.cores). MCMC cannot parallelize across species because it samples the full community jointly.](man/figures/benchmark.png)
+![Top: computation time. Bottom: correlation with true occupancy probabilities (simulated data). Stan is absent from the spatial panel because it lacks O(N) spatial approximations (SPDE, NNGP). Dashed line: parallel species fitting via options(INLAocc.cores); MCMC cannot parallelize across species because it samples the full community jointly.](man/figures/benchmark.png)
 
 ## Features
 
