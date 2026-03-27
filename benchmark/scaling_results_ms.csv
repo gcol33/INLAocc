@@ -1,9 +1,12 @@
 "N","type","method","time","cor_psi"
-100,"Multi-species","INLAocc",131.4,0.6145
-100,"Multi-species","spOccupancy",6.99000000000001,0.657
-300,"Multi-species","INLAocc",123.66,0.7958
-300,"Multi-species","spOccupancy",20.92,0.7938
-1000,"Multi-species","INLAocc",117.08,0.7968
-1000,"Multi-species","spOccupancy",76.03,0.7951
-3000,"Multi-species","INLAocc",142.48,0.9926
-3000,"Multi-species","spOccupancy",206.11,0.9999
+100,"Multi-species","INLAocc",190.67,0.5895
+100,"Multi-species","spOccupancy",18.83,0.6237
+300,"Multi-species","INLAocc",178.39,0.782
+300,"Multi-species","spOccupancy",56.18,0.7862
+1000,"Multi-species","INLAocc",172.81,0.7897
+1000,"Multi-species","spOccupancy",204.99,0.7951
+3000,"Multi-species","INLAocc",199.41,0.9914
+3000,"Multi-species","spOccupancy",539.14,0.9999
+1000,"Multi-species (parallel)","INLAocc",138.08,0.772
+3000,"Multi-species (parallel)","INLAocc",33.8,0.9942
+10000,"Multi-species (parallel)","INLAocc",42.11,0.9935

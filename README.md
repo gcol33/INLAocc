@@ -31,13 +31,13 @@ At sites where you never detected the species, you don't know if it was absent o
 
 Plain EM (Dempster, Laird & Rubin, 1977) treats each site's occupancy weight as fixed when estimating coefficients. The soft weights attenuate both occupancy and detection coefficients toward zero. MCMC avoids this by sampling a full present/absent vector at each iteration and fitting coefficients conditional on it.
 
-INLAocc recovers this with a Gibbs-style data augmentation step after the EM converges. The correction alternates between sampling hard binary occupancy states from the converged posterior weights, refitting the occupancy model on the sampled states, and refitting the detection model on the subset of sites sampled as occupied. After a short burn-in, the chain stabilizes and the draws are pooled using Rubin's combining rules (Rubin, 1987). This is the Data Augmentation algorithm (Tanner & Wong, 1987) with INLA as the conditional sampler — it jointly debiases both submodels without the circular dependency that plagues sequential correction.
+INLAocc recovers this with a Gibbs-style data augmentation step after the EM converges. The correction alternates between sampling hard binary occupancy states from the converged posterior weights, refitting the occupancy model on the sampled states, and refitting the detection model on the subset of sites sampled as occupied. After a short burn-in, the chain stabilizes and the draws are pooled using Rubin's combining rules (Rubin, 1987). This is the Data Augmentation algorithm (Tanner & Wong, 1987) with INLA as the conditional sampler; using it to debias EM-based occupancy models is, to our knowledge, novel.
 
-Each submodel is fitted with INLA (Rue, Martino & Chopin, 2009), which is itself a Bayesian method: it returns full posterior marginals for every parameter, not point estimates. The EM approximation enters only in how the latent occupancy states are handled; the Gibbs correction recovers the gap. In benchmarks, the corrected estimates correlate > 0.99 with full MCMC posteriors.
+Each submodel is fitted with INLA (Rue, Martino & Chopin, 2009), which is itself a Bayesian method: it returns full posterior marginals for every parameter, not point estimates. The EM approximation enters only in how the latent occupancy states are handled; the Gibbs correction removes the bias. In benchmarks, the corrected estimates correlate > 0.99 with full MCMC posteriors.
 
 ### Speed
 
-MCMC runtime grows linearly with the number of sites. INLAocc stays nearly flat. The reason is the EM factorization: each iteration splits the occupancy model into two independent GLMMs, which INLA solves in near-linear time via sparse precision matrices. MCMC cannot factorize this way because it must jointly sample the latent states alongside all parameters. For multi-species models the advantage compounds further, since INLAocc fits each species independently while MCMC must sample the full community in one chain.
+MCMC runtime grows linearly with the number of sites. INLAocc grows sublinearly because each EM iteration splits the occupancy model into two independent GLMMs, which INLA solves in near-linear time via sparse precision matrices. The Gibbs debiasing step adds a constant number of INLA refits but preserves this scaling advantage. MCMC cannot factorize this way because it must jointly sample the latent states alongside all parameters. For multi-species models the advantage compounds further, since INLAocc fits each species independently while MCMC must sample the full community in one chain.
 
 ![Computation time vs number of sites. Stan is absent from the spatial panel because it lacks O(N) spatial approximations (SPDE, NNGP). Dashed line: parallel species fitting via options(INLAocc.cores); MCMC cannot parallelize across species because it samples the full community jointly.](man/figures/benchmark.png)
 
@@ -53,7 +53,7 @@ Species-specific coefficient recovery from a 10-species community model (N = 1,0
 
 | Method | Correlation | RMSE |
 |--------|:-----------:|:----:|
-| INLAocc | 0.991 | 0.099 |
+| INLAocc | 0.981 | 0.149 |
 | spOccupancy | 0.995 | 0.071 |
 | Stan | 0.966 | 0.185 |
 
@@ -240,7 +240,7 @@ m3 <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data)
 avg <- modelAverage(null = m1, elev = m2, full = m3)
 ```
 
-## Coming from spOccupancy?
+## Coming from [spOccupancy](https://www.jeffdoser.com/files/spoccupancy-web/)?
 
 INLAocc accepts the same `list(y, occ.covs, det.covs, coords)` data format. The main differences: one `occu()` function instead of separate model functions, no MCMC tuning parameters, and random slopes are supported in addition to random intercepts.
 

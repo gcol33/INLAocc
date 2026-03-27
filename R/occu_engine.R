@@ -130,13 +130,52 @@ prep_occupancy <- function(data, occ_formula, occ_re_list = NULL,
 
 
 # ---------------------------------------------------------------------------
-# Fit functions: fast per-iteration INLA calls
+# Fit functions: GLM fast path for EM iterations (no random effects / spatial)
+# ---------------------------------------------------------------------------
+
+#' @noRd
+fit_detection_glm <- function(det_prep, data, weights) {
+  det_df <- det_prep$det_df
+  det_df$w <- weights[det_df$site]
+
+  fit <- glm(det_prep$formula, family = binomial, data = det_df,
+             weights = det_df$w, control = glm.control(maxit = 50))
+
+  p_fitted <- predict(fit, type = "response")
+  p_hat <- matrix(NA, data$N, data$J)
+  p_hat[cbind(det_df$site, det_df$visit)] <- p_fitted
+
+  list(fit = fit, p_hat = p_hat, det_df = det_df)
+}
+
+#' @noRd
+fit_occupancy_glm <- function(occ_prep, data, weights) {
+  occ_df <- occ_prep$occ_df
+  M <- occ_df$Ntrials[1]
+  occ_df$z <- ifelse(data$detected, M, round(weights * M))
+  occ_df$.failures <- M - occ_df$z
+
+  # glm needs cbind(success, failure) for binomial with Ntrials
+  rhs <- as.character(occ_prep$formula)[3]
+  glm_formula <- as.formula(paste("cbind(z, .failures) ~", rhs))
+
+  fit <- suppressWarnings(glm(glm_formula, family = binomial, data = occ_df,
+             control = glm.control(maxit = 50)))
+
+  psi_hat <- predict(fit, type = "response")[seq_len(data$N)]
+  list(fit = fit, psi_hat = psi_hat, occ_df = occ_df)
+}
+
+
+# ---------------------------------------------------------------------------
+# Fit functions: INLA calls (for final fit, Gibbs, and RE/spatial models)
 # ---------------------------------------------------------------------------
 
 #' @noRd
 fit_detection_inla <- function(det_prep, data, weights,
                                control.inla = NULL,
                                control.compute = NULL,
+                               control.mode = NULL,
                                num.threads = "1:1",
                                verbose = FALSE) {
   det_df <- det_prep$det_df
@@ -160,6 +199,7 @@ fit_detection_inla <- function(det_prep, data, weights,
     weights         = det_df$w,
     num.threads     = num.threads,
     control.inla    = control.inla,
+    control.mode    = control.mode,
     control.compute = control.compute,
     verbose         = verbose
   )
@@ -176,6 +216,7 @@ fit_detection_inla <- function(det_prep, data, weights,
 fit_occupancy_inla <- function(occ_prep, data, weights, spatial_obj = NULL,
                                control.inla = NULL,
                                control.compute = NULL,
+                               control.mode = NULL,
                                num.threads = "1:1",
                                verbose = FALSE) {
   occ_df <- occ_prep$occ_df
@@ -241,6 +282,7 @@ fit_occupancy_inla <- function(occ_prep, data, weights, spatial_obj = NULL,
         compute = TRUE
       ),
       control.inla    = control.inla,
+      control.mode    = control.mode,
       control.compute = control.compute,
       verbose         = verbose
     ))
@@ -263,6 +305,7 @@ fit_occupancy_inla <- function(occ_prep, data, weights, spatial_obj = NULL,
       weights         = occ_df$w,
       num.threads     = num.threads,
       control.inla    = control.inla,
+      control.mode    = control.mode,
       control.compute = control.compute,
       verbose         = verbose
     ))
@@ -278,6 +321,7 @@ fit_occupancy_inla <- function(occ_prep, data, weights, spatial_obj = NULL,
       data            = occ_df,
       num.threads     = num.threads,
       control.inla    = control.inla,
+      control.mode    = control.mode,
       control.compute = control.compute,
       verbose         = verbose
     )
@@ -346,6 +390,27 @@ em_inla <- function(data, occ_formula, det_formula,
   det_frozen <- FALSE
   delta_p <- Inf
 
+  # Warm-start: pass previous mode to INLA to skip Newton iterations.
+  # Structure is constant across EM iterations (same covariates, same N),
+  # so both theta and x transfer for occupancy; detection has constant
+  # structure too (same long-format data frame, only weights change).
+  prev_occ_mode <- NULL
+  prev_det_mode <- NULL
+
+  extract_mode <- function(fit) {
+    if (is.null(fit)) return(NULL)
+    list(theta = fit$mode$theta, x = fit$mode$x)
+  }
+
+  mode_to_ctrl <- function(m) {
+    if (is.null(m)) return(NULL)
+    has_theta <- length(m$theta) > 0
+    cm <- list(restart = has_theta)
+    if (has_theta) cm$theta <- m$theta
+    if (length(m$x) > 0) cm$x <- m$x
+    cm
+  }
+
   # --- Adaptive damping ---
   # damping = how much of OLD weights to keep (high = conservative, low = aggressive)
   # Start aggressive (low damping), back off when oscillating.
@@ -365,9 +430,11 @@ em_inla <- function(data, occ_formula, det_formula,
         det_prep, data, weights,
         control.inla = control.inla,
         control.compute = ctrl_fast,
+        control.mode = mode_to_ctrl(prev_det_mode),
         num.threads = num.threads,
         verbose = verbose >= 2
       )
+      prev_det_mode <- extract_mode(det_result$fit)
       p_hat <- det_result$p_hat
       p_hat[is.na(p_hat)] <- p_old[is.na(p_hat)]
     }
@@ -377,9 +444,11 @@ em_inla <- function(data, occ_formula, det_formula,
       occ_prep, data, weights, spatial_obj = spatial,
       control.inla = control.inla,
       control.compute = ctrl_fast,
+      control.mode = mode_to_ctrl(prev_occ_mode),
       num.threads = num.threads,
       verbose = verbose >= 2
     )
+    prev_occ_mode <- extract_mode(occ_result$fit)
     psi_hat <- occ_result$psi_hat
 
     # --- E-step: Update weights ---
@@ -898,12 +967,32 @@ mi_data_augmentation <- function(occ_prep, det_prep, data, z_hat, spatial,
   # Current state: start from EM's z_hat
   current_z_hat <- z_hat
 
+  # Warm-start: reuse previous iteration's mode to skip Newton iterations.
+  # Occupancy model has fixed structure so both theta and x carry over.
+  # Detection model changes subset size, so only theta transfers.
+  prev_occ_mode_g <- NULL
+  prev_det_mode_g <- NULL
+
+  gibbs_extract_mode <- function(fit) {
+    if (is.null(fit)) return(NULL)
+    list(theta = fit$mode$theta, x = fit$mode$x)
+  }
+
   # Storage for post-burn-in draws
   n_keep <- n_iter - n_burn
   occ_draws <- vector("list", n_keep)
   det_draws <- vector("list", n_keep)
   psi_draws <- matrix(NA, N, n_keep)
   p_draws   <- array(NA, dim = c(N, J, n_keep))
+
+  gibbs_warm_start <- function(prev_mode, transfer_x = TRUE) {
+    if (is.null(prev_mode)) return(list())
+    has_theta <- length(prev_mode$theta) > 0
+    cm <- list(restart = has_theta)
+    if (has_theta) cm$theta <- prev_mode$theta
+    if (transfer_x && length(prev_mode$x) > 0) cm$x <- prev_mode$x
+    list(control.mode = cm)
+  }
 
   for (iter in seq_len(n_iter)) {
     # --- Step 1: Sample z | (psi, p, y) ---
@@ -927,21 +1016,25 @@ mi_data_augmentation <- function(occ_prep, det_prep, data, z_hat, spatial,
       )
       stack_data <- INLA::inla.stack.data(stack)
       stack_data$spde <- si$spde
+      occ_ws <- gibbs_warm_start(prev_occ_mode_g, transfer_x = TRUE)
       occ_fit <- suppressWarnings(INLA::inla(
         formula = occ_formula, family = "binomial",
         Ntrials = rep(1L, nrow(stack_data)), data = stack_data,
         control.predictor = list(A = INLA::inla.stack.A(stack), compute = TRUE),
         num.threads = "1:1",
         control.inla = control.inla %||% INLA::inla.set.control.inla.default(),
+        control.mode = occ_ws$control.mode,
         control.compute = ctrl, verbose = FALSE
       ))
       idx <- INLA::inla.stack.index(stack, "occ")$data
       psi_iter <- occ_fit$summary.fitted.values$mean[idx]
     } else {
+      occ_ws <- gibbs_warm_start(prev_occ_mode_g, transfer_x = TRUE)
       occ_fit <- suppressWarnings(INLA::inla(
         formula = occ_formula, family = "binomial",
         Ntrials = rep(1L, N), data = occ_df, num.threads = "1:1",
         control.inla = control.inla %||% INLA::inla.set.control.inla.default(),
+        control.mode = occ_ws$control.mode,
         control.compute = ctrl, verbose = FALSE
       ))
       psi_iter <- occ_fit$summary.fitted.values$mean[seq_len(N)]
@@ -956,10 +1049,12 @@ mi_data_augmentation <- function(occ_prep, det_prep, data, z_hat, spatial,
     det_df <- build_det_df(y = y_sub, det_covs = det_covs_sub, site_idx = occ_sites)
     det_df$.Ntrials <- rep(1L, nrow(det_df))
 
+    det_ws <- gibbs_warm_start(prev_det_mode_g, transfer_x = FALSE)
     det_fit <- suppressWarnings(INLA::inla(
       formula = det_formula, family = "binomial",
       Ntrials = det_df$.Ntrials, data = det_df, num.threads = "1:1",
       control.inla = control.inla %||% INLA::inla.set.control.inla.default(),
+      control.mode = det_ws$control.mode,
       control.compute = ctrl, verbose = FALSE
     ))
 
@@ -971,6 +1066,10 @@ mi_data_augmentation <- function(occ_prep, det_prep, data, z_hat, spatial,
       p_fill <- 1 / (1 + exp(-det_fit$summary.fixed$mean[1]))
       p_iter[is.na(p_iter)] <- p_fill
     }
+
+    # --- Cache fits for warm-starting next iteration ---
+    prev_occ_mode_g <- gibbs_extract_mode(occ_fit)
+    prev_det_mode_g <- gibbs_extract_mode(det_fit)
 
     # --- Update z_hat for next iteration ---
     current_z_hat <- compute_weights(data$y, psi_iter, p_iter)
