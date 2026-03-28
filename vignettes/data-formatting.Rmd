@@ -81,7 +81,9 @@ data formatting tasks.
 The detection matrix `y` has N rows (sites) and J columns (visits):
 
 - **1** = species detected on that visit
+
 - **0** = species not detected (visit was conducted)
+
 - **NA** = visit was not conducted
 
 ```{r}
@@ -101,6 +103,7 @@ for (i in seq_len(N)) {
 Key points:
 
 - Rows always correspond to sites and columns to visits.
+
 - Variable survey effort is encoded naturally: sites with fewer visits have
   trailing `NA` values.
 - The matrix must contain only `0`, `1`, and `NA`. Non-integer values, counts
@@ -124,8 +127,11 @@ occ_covs <- data.frame(
 Requirements:
 
 - A `data.frame` with exactly N rows, one per site.
+
 - Alternatively, a named list of vectors, each of length N.
+
 - Column order must match the row order of `y`.
+
 - Categorical variables should be factors or characters (the model formula
   handles coding).
 
@@ -218,9 +224,13 @@ formatted <- occu_format(
 What it checks:
 
 - `y` contains only 0, 1, and NA.
+
 - `occ.covs` has exactly N rows.
+
 - Every element of `det.covs` is either a length-N vector or an N x J matrix.
+
 - `coords` has N rows and exactly 2 columns.
+
 - Warns if any covariates contain NAs.
 
 The returned `occu_data` object stores the validated data plus derived
@@ -401,10 +411,11 @@ y_temporal <- array(
 Covariates can be:
 
 - **Static** (N-vector): constant across seasons (e.g., elevation).
+
 - **Time-varying** (N x n_seasons matrix): changes between seasons (e.g.,
   annual land-use change).
 
-```{r, eval = FALSE}
+```{r}
 data_temporal <- list(
   y        = y_temporal,
   occ.covs = list(

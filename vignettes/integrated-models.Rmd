@@ -219,7 +219,7 @@ INLAocc, you can pass a list of formulas, one per source:
 ```{r source-formulas, eval = FALSE}
 fit2 <- occu(
   ~ occ_x1,
-  list(~ date + duration, ~ effort),
+  list(~ det_x1, ~ det_x1),
   data = sim$data,
   integrated = TRUE,
   verbose = 0

@@ -26,7 +26,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">INLAocc</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.3.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -38,6 +38,9 @@
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/quickstart.html">Quick Start</a></li>
+    <li><a class="dropdown-item" href="../articles/data-formatting.html">Formatting Data for INLAocc</a></li>
+    <li><hr class="dropdown-divider"></li>
+    <li><a class="dropdown-item" href="../articles/index.html">More articles...</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
@@ -168,6 +171,20 @@
 
         </dt>
         <dd>Print method for occu_data</dd>
+
+        <dt>
+
+          <code><a href="summary.occu_data.html">summary(<i>&lt;occu_data&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Summary statistics for occupancy detection histories</dd>
+
+        <dt>
+
+          <code><a href="plot.occu_data.html">plot(<i>&lt;occu_data&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Plot detection history patterns</dd>
 
         <dt>
 
@@ -317,7 +334,7 @@
 
         <dt>
 
-          <code><a href="logLik.occu_inla.html">logLik(<i>&lt;occu_inla&gt;</i>)</a></code>
+          <code><a href="logLik.occu_inla.html">logLik(<i>&lt;occu_inla&gt;</i>)</a></code> <code><a href="logLik.occu_inla.html">logLik(<i>&lt;occu_inla_temporal&gt;</i>)</a></code>
 
         </dt>
         <dd>Extract log-likelihood</dd>
@@ -582,7 +599,7 @@
 
       <dl><dt>
 
-          <code><a href="simulate.occu_inla.html">simulate(<i>&lt;occu_inla&gt;</i>)</a></code>
+          <code><a href="simulate.occu_inla.html">simulate(<i>&lt;occu_inla&gt;</i>)</a></code> <code><a href="simulate.occu_inla.html">simulate(<i>&lt;occu_inla_temporal&gt;</i>)</a></code>
 
         </dt>
         <dd>Simulate replicate datasets from a fitted occupancy model</dd>
@@ -665,6 +682,34 @@
 
         </dt>
         <dd>Empirical semivariogram of occupancy residuals</dd>
+
+        <dt>
+
+          <code><a href="spatialRange.html">spatialRange()</a></code>
+
+        </dt>
+        <dd>Extract spatial range and standard deviation from a fitted spatial model</dd>
+
+        <dt>
+
+          <code><a href="temporalCorr.html">temporalCorr()</a></code>
+
+        </dt>
+        <dd>Extract AR(1) temporal correlation from a fitted temporal model</dd>
+
+        <dt>
+
+          <code><a href="checkIdentifiability.html">checkIdentifiability()</a></code>
+
+        </dt>
+        <dd>Diagnose identifiability issues in occupancy models</dd>
+
+        <dt>
+
+          <code><a href="occuMap.html">occuMap()</a></code>
+
+        </dt>
+        <dd>Spatial occupancy map</dd>
       </dl></div><div class="section level2">
       <h2 id="model-comparison-averaging">Model Comparison &amp; Averaging<a class="anchor" aria-label="anchor" href="#model-comparison-averaging"></a></h2>
 
@@ -694,7 +739,7 @@
           <code><a href="waicOccu.html">waicOccu()</a></code>
 
         </dt>
-        <dd>Compute WAIC for occupancy models</dd>
+        <dd>Returns WAIC for the occupancy and detection components separately and combined. Analogous to spOccupancy::waicOcc().</dd>
 
         <dt>
 

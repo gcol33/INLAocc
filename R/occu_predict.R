@@ -424,13 +424,38 @@ predict.occu_inla_ms <- function(object, ...) {
 #' Predict from a temporal occupancy model
 #'
 #' Returns per-period predictions. If AR(1) smoothing was applied,
-#' includes the smoothed occupancy estimates.
+#' includes the smoothed occupancy estimates. If \code{period} is
+#' specified, returns predictions for that period only.
 #'
 #' @param object fitted occu_inla_temporal object
+#' @param period optional integer: return predictions for this period only
+#'   (1-indexed). If \code{NULL} (default), returns all periods.
 #' @param ... additional arguments passed to \code{predict.occu_inla}
-#' @return list with per-period predictions and optional smoothed psi
+#' @return list with per-period predictions and optional smoothed psi.
+#'   If \code{period} is specified, returns predictions for that single period.
 #' @export
-predict.occu_inla_temporal <- function(object, ...) {
+predict.occu_inla_temporal <- function(object, period = NULL, ...) {
+  if (!is.null(period)) {
+    if (!is.numeric(period) || length(period) != 1L ||
+        period < 1L || period > object$n_periods) {
+      stop(sprintf("period must be an integer between 1 and %d, got %s",
+                   object$n_periods, deparse(period)))
+    }
+    period <- as.integer(period)
+    fit <- object$period_fits[[period]]
+    if (is.null(fit)) {
+      stop(sprintf("No fitted model for period %d", period))
+    }
+    pred <- predict.occu_inla(fit, ...)
+    # Add smoothed psi for this period if available
+    pred$psi_smoothed <- if (!is.null(object$psi_smoothed)) {
+      object$psi_smoothed[, period]
+    } else {
+      NULL
+    }
+    return(pred)
+  }
+
   period_preds <- vector("list", object$n_periods)
   for (t in seq_len(object$n_periods)) {
     fit <- object$period_fits[[t]]

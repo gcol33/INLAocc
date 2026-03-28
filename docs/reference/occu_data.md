@@ -8,7 +8,16 @@ Pipe-friendly: the data.frame is the first argument.
 ## Usage
 
 ``` r
-occu_data(df, y, site, visit, occ.covs = NULL, det.covs = NULL, coords = NULL)
+occu_data(
+  df,
+  y,
+  site,
+  visit,
+  occ.covs = NULL,
+  det.covs = NULL,
+  coords = NULL,
+  impute = c("none", "mean", "median")
+)
 ```
 
 ## Arguments
@@ -46,6 +55,14 @@ occu_data(df, y, site, visit, occ.covs = NULL, det.covs = NULL, coords = NULL)
 
   character vector of length 2 giving coordinate column names, or
   `NULL`.
+
+- impute:
+
+  how to handle NAs in site-level covariates after collapsing
+  visit-rows. `"none"` (default) leaves NAs as-is. `"mean"` or
+  `"median"` fills remaining NAs with the column mean or median. Only
+  affects site-level (occupancy) covariates, not detection covariates or
+  the detection matrix.
 
 ## Value
 

@@ -4,17 +4,22 @@
 \alias{predict.occu_inla_temporal}
 \title{Predict from a temporal occupancy model}
 \usage{
-\method{predict}{occu_inla_temporal}(object, ...)
+\method{predict}{occu_inla_temporal}(object, period = NULL, ...)
 }
 \arguments{
 \item{object}{fitted occu_inla_temporal object}
 
+\item{period}{optional integer: return predictions for this period only
+(1-indexed). If \code{NULL} (default), returns all periods.}
+
 \item{...}{additional arguments passed to \code{predict.occu_inla}}
 }
 \value{
-list with per-period predictions and optional smoothed psi
+list with per-period predictions and optional smoothed psi.
+If \code{period} is specified, returns predictions for that single period.
 }
 \description{
 Returns per-period predictions. If AR(1) smoothing was applied,
-includes the smoothed occupancy estimates.
+includes the smoothed occupancy estimates. If \code{period} is
+specified, returns predictions for that period only.
 }

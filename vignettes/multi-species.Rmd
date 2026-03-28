@@ -75,6 +75,28 @@ has its estimates pulled toward the community mean $\boldsymbol{\mu}_\beta$,
 preventing the extreme coefficient values that maximum-likelihood estimation
 would produce with sparse data.
 
+Consider a species detected at only 3 out of 200 sites. Without the hierarchy,
+there is almost no information to estimate its occupancy or covariate effects.
+A maximum-likelihood estimate would sit at or near the boundary (occupancy of
+zero or one), and a weakly informative prior would dominate the posterior. With
+the community hierarchy, the model knows that this species is one member of a
+10-species assemblage, and the other 9 species collectively inform what
+"typical" occupancy and covariate effects look like. The rare species gets
+pulled toward that community average. The pull is not fixed: it depends on how
+much data the species contributes. A species with 100 detections barely moves;
+a species with 3 detections moves a lot. This is partial pooling, and it
+produces estimates that are better calibrated than either no-pooling
+(species-by-species) or complete-pooling (one model for all species).
+
+The amount of shrinkage is governed by the ratio of within-species variance to
+between-species variance. When species truly differ in their responses to a
+covariate (large $\boldsymbol{\Sigma}_\beta$), the hierarchy allows more
+species-level variation and pulls weakly. When species are similar (small
+$\boldsymbol{\Sigma}_\beta$), even data-rich species get pulled somewhat toward
+the community mean. The model estimates this ratio from the data, so the
+analyst does not need to choose how much to pool. The hierarchy handles it
+automatically.
+
 
 ## Simulating multi-species data
 
@@ -92,7 +114,9 @@ The returned object contains:
 - `sim$data$y` --- a 3D detection array with dimensions species $\times$ sites
   $\times$ visits.
 - `sim$data$occ_x1` --- a site-level covariate shared across species.
+
 - `sim$data$det_x1` --- a visit-level detection covariate.
+
 - `sim$params` --- the true species-level coefficients drawn from the community
   distribution, useful for parameter recovery checks.
 
@@ -115,6 +139,24 @@ The community-level means represent the response of an "average species" in the
 assemblage. Per-species estimates show how each species deviates from this
 average. Species with few detections have their estimates shrunk more strongly
 toward the community mean, which prevents overfitting to sparse data.
+
+The community intercept $\mu_{\beta_0}$ is the log-odds of occupancy for an
+average species in the assemblage. If it equals 0.5, the average species
+occupies about 62% of sites (on the probability scale). A positive community
+mean for a covariate ($\mu_{\beta_1} > 0$) means that species in this
+assemblage tend to respond positively to the covariate. But the community
+standard deviation $\sigma_{\beta_1}$ matters just as much. A large SD means
+species differ substantially in their responses: some may have positive slopes,
+others negative, even though the average is positive. A small SD means all
+species respond similarly, and the community mean is a good summary for the
+whole assemblage.
+
+Ecologically, the community mean answers "does this covariate matter for the
+assemblage as a whole?" and the community SD answers "do species agree?" When
+both the mean and SD are large, you have a covariate that matters but affects
+species in different directions. When the mean is near zero but the SD is
+large, the covariate matters for individual species but cancels out at the
+community level. These distinctions are invisible in single-species analyses.
 
 ### Posterior predictive checks
 
@@ -147,6 +189,23 @@ community-level hyperparameters are estimated after all species fits complete.
 
 ## Species richness
 
+Naive richness counts the number of species detected at least once at a site.
+This always underestimates true richness, because some species that are present
+go undetected during surveys. The gap between naive and model-estimated
+richness quantifies the "detection shortfall" at each site. Sites with low
+detection probabilities have larger shortfalls: if the average species has a
+detection probability of 0.3 per visit across 4 visits, the probability of
+missing a present species entirely is $(1 - 0.3)^4 \approx 0.24$, so roughly
+one in four present species goes unrecorded.
+
+This matters for conservation prioritization. A site that looks species-poor in
+raw survey data might actually be species-rich but hard to survey, perhaps
+because of dense vegetation, nocturnal species, or few visits. The occupancy
+model separates the ecological process (which species are present) from the
+observation process (which species were detected), and the richness estimate
+reflects the former. Without this correction, conservation assessments
+systematically undervalue sites where surveys are difficult.
+
 Site-level species richness corrected for imperfect detection is computed from
 the posterior occupancy probabilities:
 
@@ -167,9 +226,8 @@ detection shortfall at each site.
 
 Extract species-level coefficients and summaries:
 
-```{r per-species, eval = FALSE}
+```{r per-species}
 coef(fit)                  # all species in one table
-confint(fit, species = 3)  # CIs for species 3
 plot(fit)                  # coefficient forest plot
 ```
 
@@ -184,7 +242,7 @@ near zero are those most influenced by shrinkage.
 
 Multi-species predictions at new covariate values work the same as single-species prediction:
 
-```{r predict-ms, eval = FALSE}
+```{r predict-ms}
 new_sites <- data.frame(occ_x1 = seq(-2, 2, by = 0.5))
 preds <- predict(fit, X.0 = new_sites, type = "occupancy")
 ```
@@ -221,6 +279,29 @@ $$\boldsymbol{\Sigma}_{ss'} \propto \boldsymbol{\lambda}_s^\top \boldsymbol{\lam
 Species with similar loading vectors tend to co-occur; species with opposing
 loadings are negatively associated.
 
+The latent factors represent unmeasured environmental axes that drive species
+co-occurrence after accounting for the measured covariates. Factor 1 might
+capture a moisture gradient that the model's covariates do not include. Factor
+2 might correspond to a disturbance axis. Species with high positive loadings
+on the same factor tend to co-occur because they share habitat requirements
+along that unmeasured gradient. Species with loadings of opposite sign on the
+same factor are spatially segregated: where one is common, the other is rare.
+The factors are not labelled; the analyst interprets them by examining which
+species load heavily and looking for ecological coherence. A factor where all
+forest species load positively and all grassland species load negatively is
+likely capturing canopy cover or something correlated with it.
+
+The species correlation matrix derived from the loadings
+($\boldsymbol{\Lambda}\boldsymbol{\Lambda}^\top$) reveals the community's
+latent structure. Strong positive correlations between species pairs indicate
+shared responses to unmeasured gradients. Strong negative correlations indicate
+spatial segregation that the measured covariates do not explain. This could
+reflect competitive exclusion, but it could equally reflect contrasting habitat
+preferences along an unmeasured axis. The correlation matrix is residual: it
+describes associations after removing the effects of measured covariates. If
+adding a new covariate to the model reduces a pairwise correlation toward zero,
+that covariate was the unmeasured driver behind the association.
+
 ### Fitting
 
 Specify the number of factors via `n.factors`:
@@ -252,7 +333,7 @@ start with $k = \lfloor S / 2 \rfloor$ and search downward.
 The estimated loadings can be used to reconstruct the residual species
 correlation matrix:
 
-```{r lf-cor, eval = FALSE}
+```{r lf-cor}
 lambda <- fit_lf$lambda
 sp_cov <- lambda %*% t(lambda)
 sp_cor <- cov2cor(sp_cov + diag(nrow(sp_cov)))
@@ -279,7 +360,7 @@ Both p-values should be near 0.5. If the community model showed a p-value near 0
 
 Prediction from a latent factor model accounts for species correlations. At a new site, the predicted occupancy of each species incorporates both the covariate effects and the latent factor structure:
 
-```{r predict-lf, eval = FALSE}
+```{r predict-lf}
 new_sites <- data.frame(occ_x1 = c(-1, 0, 1))
 preds_lf <- predict(fit_lf, X.0 = new_sites, type = "occupancy")
 ```
@@ -311,6 +392,17 @@ in `vignette("spatial-models")`.
 
 ## Joint Species Distribution Model (JSDM)
 
+The choice between a JSDM and an occupancy model comes down to whether
+detection matters. For well-designed atlas surveys, complete vegetation plots,
+or any protocol where detection probability is near 1, a JSDM is appropriate
+and faster because it skips the observation model entirely. For camera traps,
+point counts, eDNA sampling, or any survey method where detection is below 0.5,
+the occupancy model is needed. Fitting a JSDM to low-detection data will bias
+occupancy estimates downward because undetected presences are treated as true
+absences. When in doubt, fit the occupancy model and check: if estimated
+detection probabilities are all above 0.8, a JSDM would have given similar
+results.
+
 When detection is not a concern --- for example, with atlas data, vegetation
 plots, or high-effort presence/absence surveys --- the occupancy observation
 model is unnecessary. A JSDM fits the ecological process directly:
@@ -334,9 +426,11 @@ example, a random intercept for habitat type allows occupancy to vary across
 habitats while still pooling information at the community level:
 
 ```{r re, eval = FALSE}
+sim$data$occ.covs$habitat <- sample(c("forest", "grassland", "wetland"),
+                                     200, replace = TRUE)
 fit_re <- occu(~ occ_x1 + (1 | habitat), ~ det_x1, data = sim$data,
                multispecies = TRUE, verbose = 0)
-ranef(fit_re)
+ranef(fit_re)  # requires ranef.occu_inla_ms method
 ```
 
 Each species gets its own random effect variance, but these are regularised
@@ -349,7 +443,7 @@ are shared across species but their effects differ in magnitude.
 For multi-season data with multiple species, combine `multispecies = TRUE` with
 a temporal correlation structure:
 
-```{r temporal, eval = FALSE}
+```{r temporal}
 sim_mt <- simTMsOcc(N = 50, J = 3, n_species = 5, n_seasons = 4, seed = 100)
 
 fit_mt <- occu(~ 1, ~ 1, data = sim_mt$data,
@@ -367,7 +461,7 @@ few detections in some seasons still produce stable trend estimates.
 Comparing nested models on a per-species basis reveals which species benefit
 from additional covariates:
 
-```{r compare, eval = FALSE}
+```{r compare}
 m1 <- occu(~ 1, ~ 1, data = sim$data, multispecies = TRUE, verbose = 0)
 m2 <- occu(~ occ_x1, ~ det_x1, data = sim$data, multispecies = TRUE, verbose = 0)
 
@@ -392,13 +486,14 @@ correlates with functional traits. The `postHocLM()` function regresses
 estimated species coefficients on a trait matrix:
 
 ```{r traits, eval = FALSE}
+sp_coefs <- coef(fit)
 traits <- data.frame(
-  species = names(coef(fit)),
-  body_mass = rnorm(10),
-  diet = sample(c("insect", "seed"), 10, replace = TRUE)
+  psi_hat = sp_coefs$occ_x1,
+  body_mass = rnorm(nrow(sp_coefs)),
+  diet = sample(c("insect", "seed"), nrow(sp_coefs), replace = TRUE)
 )
 
-ph <- postHocLM(fit, ~ body_mass + diet, traits = traits)
+ph <- postHocLM(psi_hat ~ body_mass + diet, data = traits)
 summary(ph)
 ```
 
@@ -439,3 +534,25 @@ uncertainty in those coefficients.
   For formal inference on trait--environment interactions, incorporate traits
   directly as predictors of the community-level mean (a fourth-corner model),
   which INLAocc does not currently support.
+
+How many species are needed for stable community-level estimates? With fewer
+than 10 species, the community mean and variance are estimated from very few
+data points, so the hierarchy provides limited regularization. With 10 to 20
+species, the estimates are usually stable. Above 20, the community distribution
+is well-characterized and rare species benefit strongly from the pooling. There
+is no strict minimum, but assemblages of fewer than 5 species gain little from
+the community framework and might be better served by independent single-species
+models or a simpler shared-prior approach.
+
+Uneven detection rates across species deserve attention. If a few common species
+have detection probabilities above 0.8 and many rare species sit below 0.2, the
+common species dominate the community-level estimates simply because they
+contribute more information. Species-specific detection covariates help here: if
+detection depends on, say, body size or vocalization rate, including that
+covariate in the detection formula lets the model account for the variation
+rather than averaging over it. Species with zero detections across all sites
+contribute nothing to the estimation. They cannot inform either the species-level
+or community-level parameters. Remove them before fitting, or treat them as
+confirmed absences. Keeping zero-detection species in the model inflates the
+number of species $S$ without adding any data, which dilutes the community
+mean toward zero occupancy.

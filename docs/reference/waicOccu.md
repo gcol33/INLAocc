@@ -1,4 +1,4 @@
-# Compute WAIC for occupancy models
+# Returns WAIC for the occupancy and detection components separately and combined. Analogous to spOccupancy::waicOcc().
 
 Returns WAIC for the occupancy and detection components separately and
 combined. Analogous to spOccupancy::waicOcc().

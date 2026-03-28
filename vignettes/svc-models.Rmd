@@ -61,6 +61,7 @@ where the spatially varying slope decomposes as:
 $$\beta_1(\mathbf{s}_i) = \bar{\beta}_1 + \tilde{\beta}_1(\mathbf{s}_i)$$
 
 - $\bar{\beta}_1$ is the **global (mean) effect** of $x_1$ across all sites.
+
 - $\tilde{\beta}_1(\mathbf{s}_i) \sim \text{GP}(0, C_\beta(\cdot))$ is the
   **spatial deviation** at site $i$, drawn from a Gaussian process with its own
   Matern covariance function $C_\beta$.
@@ -80,6 +81,29 @@ The spatial smoothing via the Gaussian process prevents overfitting to
 individual sites. Sites close together share information about the local
 coefficient value, which is particularly important when per-site sample sizes
 (number of visits) are modest.
+
+Spatial non-stationarity is common in ecology. Elevation effects on bird
+occupancy change with latitude because the treeline shifts: 1000 m is alpine
+tundra in the Alps but montane forest in the tropics. Temperature effects on
+plant occurrence differ between continental and maritime climates because
+humidity mediates the physiological response. Land-use intensity has different
+consequences depending on the regional species pool: converting forest to
+agriculture in a region with many forest specialists causes steep occupancy
+declines, while the same conversion in a region dominated by generalists has
+less effect. In each case, the slope of the covariate-occupancy relationship
+changes across space because of an interaction with geography that the analyst
+may not have measured or may not know about in advance.
+
+The SVC captures these patterns without requiring the analyst to specify the
+interaction. Instead of writing `occupancy ~ elevation * latitude`, which
+assumes a specific parametric form for the interaction, the SVC lets the data
+determine where and how the elevation effect changes. This is useful when the
+interaction is nonlinear, when the interacting variable is unknown, or when
+multiple interacting variables operate simultaneously. The cost is that the SVC
+is harder to interpret than a simple interaction term, because the spatial
+surface of deviations does not come with a label saying "this is latitude" or
+"this is humidity." The analyst must examine the surface and propose
+explanations.
 
 
 ## Simulating SVC data
@@ -126,7 +150,7 @@ distinct from the standard spatial random effect: the intercept SVC interacts
 with the constant "1" in the design matrix, so it is functionally equivalent to
 a spatial intercept field, but parameterised through the SVC machinery.
 
-```{r fit-svc-intercept}
+```{r fit-svc-intercept, eval = FALSE}
 fit_svc_int <- occu(~ occ_x1, ~ det_x1, data = sim$data,
                     spatial = sim$data$coords, svc = 1, verbose = 0)
 summary(fit_svc_int)
@@ -162,14 +186,38 @@ Reading this output:
   smoothly the coefficient changes across space (larger range = smoother). The
   SVC standard deviation measures how much the coefficient varies across space.
 
+The global effect is the "average" relationship between the covariate and
+occupancy, integrated across the entire study area. It answers the same
+question as a standard (non-SVC) model would. The SVC range tells you the
+spatial scale over which the relationship changes. A short range means the
+coefficient shifts rapidly from site to site, implying fine-grained spatial
+heterogeneity in the ecological process. A long range means broad, regional
+gradients where the coefficient changes slowly. If the range is much larger
+than the study extent, the coefficient is approximately constant and the SVC
+adds little beyond what a fixed slope provides.
+
+The SVC standard deviation measures total spatial variation in the coefficient.
+Compare it to the magnitude of the global effect. If the global effect is -0.8
+and the SVC SD is 0.1, the coefficient ranges from roughly -0.9 to -0.7 across
+space, and the relationship is qualitatively the same everywhere. If the SVC SD
+is 1.2, the coefficient ranges from about -2.0 to +0.4, meaning the
+relationship reverses sign in parts of the study area. That is a qualitatively
+different situation and warrants careful ecological interpretation. When the SVC
+SD is small relative to the global effect, consider dropping the SVC in favor
+of the simpler constant-coefficient model.
+
 ### Multiple SVCs
 
 When theory suggests that more than one covariate has a spatially varying
 effect, pass a vector to `svc`:
 
-```{r fit-svc-multi, eval = FALSE}
-fit_svc_multi <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data,
-                      spatial = sim$data$coords, svc = c(1, 2), verbose = 0)
+```{r fit-svc-multi}
+sim2 <- simulate_occu(N = 300, J = 4, n_occ_covs = 2, n_det_covs = 1,
+                       beta_occ = c(0.5, -0.8, 0.4),
+                       beta_det = c(0, -0.5),
+                       spatial_range = 0.3, seed = 43)
+fit_svc_multi <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim2$data,
+                      spatial = sim2$data$coords, svc = c(1, 2), verbose = 0)
 ```
 
 Both the intercept and the `occ_x1` slope vary spatially. Each SVC adds a
@@ -214,6 +262,16 @@ plot(svc_df$x, svc_df$y,
      xlab = "Easting", ylab = "Northing",
      main = "Spatially varying effect of occ_x1")
 ```
+
+When examining an SVC map, look for spatial structure that matches known
+geography. A north-south gradient in the coefficient might indicate an
+interaction with temperature or latitude. East-west variation near a coastline
+might reflect maritime influence on the ecological relationship. Patchy
+variation at scales smaller than the spacing between sites usually indicates
+noise rather than signal: the SVC is interpolating between sparse data points
+and the resulting pattern is not ecologically interpretable. If the map looks
+like static, the SVC may be overfitting, and the constant-coefficient model is
+likely a better choice.
 
 For publication-quality maps, use `ggplot2`:
 
@@ -305,6 +363,7 @@ compare_models(base = m_base,
 Interpretation:
 
 - **base to spatial**: a WAIC improvement confirms spatial structure matters.
+
 - **spatial to svc_int**: any improvement indicates spatial variation in
   baseline occupancy beyond what the standard spatial field captures.
 - **spatial to svc_slope**: a substantial improvement indicates the effect of
@@ -316,6 +375,15 @@ justified. A spatially varying intercept captures spatial variation in *baseline
 occupancy. An SVC on a slope captures spatial variation in *how the covariate
 affects occupancy*. These are different ecological hypotheses --- compare them
 explicitly rather than assuming one subsumes the other.
+
+Each step in this comparison tests a specific ecological hypothesis. Going from
+base to spatial tests "is there unexplained spatial structure in occupancy?"
+Going from spatial to SVC-intercept tests "does baseline occupancy vary beyond
+what the covariates and a single spatial field explain?" Going from spatial to
+SVC-slope tests "does the effect of the covariate change across space?" The
+WAIC differences between these nested models answer each question
+quantitatively. A large WAIC drop at one step but not another tells you which
+kind of spatial complexity the data support.
 
 
 ## Prediction at new locations
@@ -410,9 +478,11 @@ the signal of an omitted covariate.
 The recommended workflow for deciding whether an SVC is needed:
 
 1. Fit the model without any spatial effect.
+
 2. Add a spatial intercept (captures unmeasured spatial variation in baseline
    occupancy).
 3. Add an SVC on the hypothesised covariate.
+
 4. Compare all three via WAIC using `compare_models()`.
 
 If the SVC does not improve on the spatial intercept model, the covariate effect
@@ -468,6 +538,15 @@ If results are sensitive to the choice of PC prior parameters, the data are
 likely marginal for supporting an SVC. Report the sensitivity analysis alongside
 the primary results.
 
+In practice, this means fitting the SVC under at least two prior
+specifications. For example, change the PC prior from $P(\sigma > 1) = 0.05$
+to $P(\sigma > 2) = 0.1$ and refit. If the SVC surface changes substantially
+in magnitude or spatial pattern, the data do not contain enough information to
+pin down the SVC, and the posterior is being driven by the prior rather than
+the likelihood. Report both results side by side. If the surface is stable
+across reasonable prior choices, the SVC is well-identified and the conclusions
+do not depend on subjective prior decisions.
+
 ### Identifiability concerns
 
 With both an intercept spatial field $w(\mathbf{s}_i)$ and an SVC field
@@ -506,6 +585,17 @@ model and reporting the global coefficient only.
 - Always compare to simpler alternatives: no spatial effect, spatial intercept
   only, constant coefficient with spatial intercept.
 - Visualise the SVC surface. If it looks like noise, it probably is.
+
 - SVC + temporal is slow. Establish that the SVC is warranted in a
   spatial-only model before adding temporal structure.
 - Prior sensitivity and identifiability checks are essential, not optional.
+
+The full decision tree for SVC analysis: (1) fit the base model without spatial
+effects, (2) check Moran's I on residuals for spatial autocorrelation, (3) add
+a spatial intercept field, (4) hypothesize which covariate might have a
+spatially varying effect based on ecological reasoning, (5) fit the SVC model,
+(6) compare all models via WAIC, (7) visualize the SVC surface and check
+whether the spatial pattern is interpretable, (8) run a prior sensitivity
+analysis to confirm the results are stable. If the SVC does not improve WAIC,
+or the surface looks like noise, or the results shift under different priors,
+fall back to the spatial intercept model and report the global coefficient.

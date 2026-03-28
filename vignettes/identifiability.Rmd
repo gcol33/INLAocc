@@ -176,9 +176,9 @@ covariate in both the occupancy and detection submodels. This is tempting when
 a variable (e.g., habitat quality, elevation) plausibly affects both processes,
 but it creates a fundamental identifiability problem.
 
-```{r confounding, eval = FALSE}
+```{r confounding}
 # Share a covariate between both processes
-sim$data$det.covs$occ_x1 <- sim$data$occ.covs$occ_x1[rep(1:200, each = 1)]
+sim$data$det.covs$occ_x1 <- matrix(rep(sim$data$occ.covs$occ_x1, 4), nrow = 200, ncol = 4)
 
 # Same variable in both submodels
 fit_confound <- occu(~ occ_x1, ~ occ_x1, data = sim$data, verbose = 0)

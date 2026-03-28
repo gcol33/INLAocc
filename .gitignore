@@ -10,3 +10,6 @@ src/*.dll
 *.tar.gz
 *.Rcheck
 benchmark/*.exe
+Rplots.pdf
+_tmp_*.R
+vignettes/*_cache/

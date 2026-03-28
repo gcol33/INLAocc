@@ -42,6 +42,10 @@ Prepare detection histories and covariates.
   : Create an areal spatial effect for occupancy models (CAR/BYM2)
 - [`print(`*`<occu_data>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_data.md)
   : Print method for occu_data
+- [`summary(`*`<occu_data>`*`)`](https://gillescolling.com/INLAocc/reference/summary.occu_data.md)
+  : Summary statistics for occupancy detection histories
+- [`plot(`*`<occu_data>`*`)`](https://gillescolling.com/INLAocc/reference/plot.occu_data.md)
+  : Plot detection history patterns
 - [`print(`*`<occu_spatial>`*`)`](https://gillescolling.com/INLAocc/reference/print.occu_spatial.md)
   : Print method for occu_spatial
 
@@ -92,6 +96,7 @@ Standard R generics for occupancy model objects.
 - [`vcov(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/vcov.occu_inla.md)
   : Approximate variance-covariance matrix
 - [`logLik(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/logLik.occu_inla.md)
+  [`logLik(`*`<occu_inla_temporal>`*`)`](https://gillescolling.com/INLAocc/reference/logLik.occu_inla.md)
   : Extract log-likelihood
 - [`nobs(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/nobs.occu_inla.md)
   : Number of observations
@@ -175,6 +180,7 @@ Extract fitted values and residuals for all model types.
 Simulation-based diagnostics.
 
 - [`simulate(`*`<occu_inla>`*`)`](https://gillescolling.com/INLAocc/reference/simulate.occu_inla.md)
+  [`simulate(`*`<occu_inla_temporal>`*`)`](https://gillescolling.com/INLAocc/reference/simulate.occu_inla.md)
   : Simulate replicate datasets from a fitted occupancy model
 - [`pitResiduals()`](https://gillescolling.com/INLAocc/reference/pitResiduals.md)
   : Compute PIT (scaled) residuals for an occupancy model
@@ -201,6 +207,15 @@ Autocorrelation testing and semivariograms.
   : Durbin-Watson test for temporal autocorrelation in residuals
 - [`variogram()`](https://gillescolling.com/INLAocc/reference/variogram.md)
   : Empirical semivariogram of occupancy residuals
+- [`spatialRange()`](https://gillescolling.com/INLAocc/reference/spatialRange.md)
+  : Extract spatial range and standard deviation from a fitted spatial
+  model
+- [`temporalCorr()`](https://gillescolling.com/INLAocc/reference/temporalCorr.md)
+  : Extract AR(1) temporal correlation from a fitted temporal model
+- [`checkIdentifiability()`](https://gillescolling.com/INLAocc/reference/checkIdentifiability.md)
+  : Diagnose identifiability issues in occupancy models
+- [`occuMap()`](https://gillescolling.com/INLAocc/reference/occuMap.md)
+  : Spatial occupancy map
 
 ## Model Comparison & Averaging
 
@@ -211,7 +226,8 @@ Information criteria, weights, and multi-model inference.
 - [`modelAverage()`](https://gillescolling.com/INLAocc/reference/modelAverage.md)
   : Model-averaged predictions from multiple occupancy models
 - [`waicOccu()`](https://gillescolling.com/INLAocc/reference/waicOccu.md)
-  : Compute WAIC for occupancy models
+  : Returns WAIC for the occupancy and detection components separately
+  and combined. Analogous to spOccupancy::waicOcc().
 - [`ppcOccu()`](https://gillescolling.com/INLAocc/reference/ppcOccu.md)
   : Posterior predictive checks for occupancy models
 

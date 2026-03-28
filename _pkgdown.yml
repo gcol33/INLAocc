@@ -65,6 +65,8 @@ reference:
   - occu_data
   - occu_areal
   - print.occu_data
+  - summary.occu_data
+  - plot.occu_data
   - print.occu_spatial
 
 - title: Model Specification
@@ -155,6 +157,10 @@ reference:
   - moranI
   - durbinWatson
   - variogram
+  - spatialRange
+  - temporalCorr
+  - checkIdentifiability
+  - occuMap
 
 - title: Model Comparison & Averaging
   desc: Information criteria, weights, and multi-model inference.

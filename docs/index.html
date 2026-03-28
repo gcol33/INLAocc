@@ -47,7 +47,7 @@ A fast alternative to MCMC for occupancy modelling.
 
     <a class="navbar-brand me-2" href="index.html">INLAocc</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.3.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -61,6 +61,9 @@ A fast alternative to MCMC for occupancy modelling.
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><a class="dropdown-item" href="articles/quickstart.html">Quick Start</a></li>
+    <li><a class="dropdown-item" href="articles/data-formatting.html">Formatting Data for INLAocc</a></li>
+    <li><hr class="dropdown-divider"></li>
+    <li><a class="dropdown-item" href="articles/index.html">More articles...</a></li>
   </ul>
 </li>
 <li class="nav-item"><a class="nav-link" href="news/index.html">Changelog</a></li>
@@ -89,8 +92,8 @@ A fast alternative to MCMC for occupancy modelling.
 <div class="section level1">
 <div class="page-header"><h1 id="inlaocc">INLAocc<a class="anchor" aria-label="anchor" href="#inlaocc"></a>
 </h1></div>
-<p><strong>Occupancy models via INLA — a fast alternative to MCMC.</strong></p>
-<p>Fit single-species, multi-species, spatial, temporal, and integrated occupancy models through one function. INLAocc uses an EM algorithm with INLA at each M-step, giving fast and accurate estimates of species occurrence while accounting for imperfect detection.</p>
+<p><strong>Occupancy models via INLA. A fast alternative to MCMC.</strong></p>
+<p>Single-species, multi-species, spatial, temporal, and integrated occupancy models through one function. EM algorithm with INLA at the M-step, plus a Gibbs-style data augmentation correction that jointly debiases both occupancy and detection coefficients.</p>
 <div class="section level2">
 <h2 id="quick-start">Quick Start<a class="anchor" aria-label="anchor" href="#quick-start"></a>
 </h2>
@@ -107,8 +110,59 @@ A fast alternative to MCMC for occupancy modelling.
 <div class="section level2">
 <h2 id="why-inlaocc">Why INLAocc<a class="anchor" aria-label="anchor" href="#why-inlaocc"></a>
 </h2>
-<p>Occupancy models separate two entangled processes — where a species actually occurs (occupancy) and where you happen to detect it (detection). Getting this right matters for conservation decisions, but fitting these models with MCMC can be slow, especially for spatial or multi-species extensions.</p>
-<p>INLAocc uses an EM algorithm with INLA at each M-step, and a multiple imputation step that corrects for the attenuation bias this introduces. The estimates correlate &gt; 0.99 with MCMC, at a fraction of the runtime.</p>
+<p>Occupancy models separate two processes: where a species occurs and where you detect it. Fitting them with MCMC is slow, especially with spatial or multi-species structure.</p>
+<p>At sites where you never detected the species, you don’t know if it was absent or just missed. MCMC handles this by sampling the latent states directly. INLAocc instead alternates between two steps: given current estimates, compute how likely each undetected site is to be truly occupied (E-step); then refit the occupancy and detection models with INLA using those weights (M-step). The estimates converge in a few iterations.</p>
+<p>Plain EM (Dempster, Laird &amp; Rubin, 1977) treats each site’s occupancy weight as fixed when estimating coefficients. The soft weights attenuate both occupancy and detection coefficients toward zero. MCMC avoids this by sampling a full present/absent vector at each iteration and fitting coefficients conditional on it.</p>
+<p>INLAocc recovers this with a Gibbs-style data augmentation step after the EM converges. The correction alternates between sampling hard binary occupancy states from the converged posterior weights, refitting the occupancy model on the sampled states, and refitting the detection model on the subset of sites sampled as occupied. After a short burn-in, the chain stabilizes and the draws are pooled using Rubin’s combining rules (Rubin, 1987). This is the Data Augmentation algorithm (Tanner &amp; Wong, 1987) with INLA as the conditional sampler; using it to debias EM-based occupancy models is, to our knowledge, novel.</p>
+<p>Each submodel is fitted with INLA (Rue, Martino &amp; Chopin, 2009), which is itself a Bayesian method: it returns full posterior marginals for every parameter, not point estimates. The EM approximation enters only in how the latent occupancy states are handled; the Gibbs correction removes the bias. In benchmarks, the corrected estimates correlate &gt; 0.99 with full MCMC posteriors.</p>
+<div class="section level3">
+<h3 id="speed">Speed<a class="anchor" aria-label="anchor" href="#speed"></a>
+</h3>
+<p>MCMC runtime grows linearly with the number of sites. INLAocc grows sublinearly because each EM iteration splits the occupancy model into two independent GLMMs, which INLA solves in near-linear time via sparse precision matrices. The Gibbs debiasing step adds a constant number of INLA refits but preserves this scaling advantage. MCMC cannot factorize this way because it must jointly sample the latent states alongside all parameters. For multi-species models the advantage compounds further, since INLAocc fits each species independently while MCMC must sample the full community in one chain.</p>
+<div class="float">
+<img src="reference/figures/benchmark.png" alt="Computation time vs number of sites. Stan is absent from the spatial panel because it lacks O(N) spatial approximations (SPDE, NNGP). Dashed line: parallel species fitting via options(INLAocc.cores); MCMC cannot parallelize across species because it samples the full community jointly."><div class="figcaption">Computation time vs number of sites. Stan is absent from the spatial panel because it lacks O(N) spatial approximations (SPDE, NNGP). Dashed line: parallel species fitting via options(INLAocc.cores); MCMC cannot parallelize across species because it samples the full community jointly.</div>
+</div>
+</div>
+<div class="section level3">
+<h3 id="accuracy">Accuracy<a class="anchor" aria-label="anchor" href="#accuracy"></a>
+</h3>
+<p>All benchmarks use simulated data with known true occupancy probabilities. The figure below shows the correlation between estimated and true site-level occupancy across all three model types. INLAocc matches MCMC accuracy at every scale tested.</p>
+<div class="float">
+<img src="reference/figures/accuracy.png" alt="Correlation between estimated and true occupancy probabilities on simulated data. All three methods recover the truth comparably; the EM approximation does not sacrifice accuracy for speed."><div class="figcaption">Correlation between estimated and true occupancy probabilities on simulated data. All three methods recover the truth comparably; the EM approximation does not sacrifice accuracy for speed.</div>
+</div>
+</div>
+<div class="section level3">
+<h3 id="parameter-recovery">Parameter recovery<a class="anchor" aria-label="anchor" href="#parameter-recovery"></a>
+</h3>
+<p>Species-specific coefficient recovery from a 10-species community model (N = 1,000 sites). Each point is one species-level coefficient; the dashed line is the 1:1 identity. The Gibbs data augmentation correction brings INLAocc’s coefficient recovery in line with full MCMC methods.</p>
+<table class="table">
+<thead><tr>
+<th>Method</th>
+<th align="center">Correlation</th>
+<th align="center">RMSE</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>INLAocc</td>
+<td align="center">0.981</td>
+<td align="center">0.149</td>
+</tr>
+<tr>
+<td>spOccupancy</td>
+<td align="center">0.995</td>
+<td align="center">0.071</td>
+</tr>
+<tr>
+<td>Stan</td>
+<td align="center">0.966</td>
+<td align="center">0.185</td>
+</tr>
+</tbody>
+</table>
+<div class="float">
+<img src="reference/figures/parameters.png" alt="Estimated vs true species-specific occupancy and detection coefficients from a 10-species community simulation. All three methods track the 1:1 line closely."><div class="figcaption">Estimated vs true species-specific occupancy and detection coefficients from a 10-species community simulation. All three methods track the 1:1 line closely.</div>
+</div>
+</div>
 </div>
 <div class="section level2">
 <h2 id="features">Features<a class="anchor" aria-label="anchor" href="#features"></a>
@@ -116,7 +170,7 @@ A fast alternative to MCMC for occupancy modelling.
 <div class="section level3">
 <h3 id="model-types">Model Types<a class="anchor" aria-label="anchor" href="#model-types"></a>
 </h3>
-<p>One <code><a href="reference/occu.html">occu()</a></code> call handles everything — model type is determined by the arguments you pass:</p>
+<p>Model type is determined by the arguments you pass to <code><a href="reference/occu.html">occu()</a></code>:</p>
 <table class="table">
 <colgroup>
 <col width="50%">
@@ -169,7 +223,6 @@ A fast alternative to MCMC for occupancy modelling.
 <div class="section level3">
 <h3 id="random-effects">Random Effects<a class="anchor" aria-label="anchor" href="#random-effects"></a>
 </h3>
-<p>Mixed-model formula syntax with native AST parsing:</p>
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">elev</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">|</span> <span class="va">region</span><span class="op">)</span>, <span class="op">~</span> <span class="va">effort</span>, <span class="va">data</span><span class="op">)</span>              <span class="co"># random intercept</span></span>
 <span><span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">elev</span> <span class="op">+</span> <span class="op">(</span><span class="fl">1</span> <span class="op">+</span> <span class="va">elev</span> <span class="op">|</span> <span class="va">region</span><span class="op">)</span>, <span class="op">~</span> <span class="va">effort</span>, <span class="va">data</span><span class="op">)</span>       <span class="co"># random slope</span></span>
@@ -179,29 +232,26 @@ A fast alternative to MCMC for occupancy modelling.
 <div class="section level3">
 <h3 id="diagnostics">Diagnostics<a class="anchor" aria-label="anchor" href="#diagnostics"></a>
 </h3>
-<p>Full diagnostic suite with zero external dependencies:</p>
+<p>All diagnostics run on model residuals. They check whether the fitted model captured the structure in the data, or whether patterns remain unexplained.</p>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Simulation-based residual checks</span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/stats/simulate.html" class="external-link">simulate</a></span><span class="op">(</span><span class="va">fit</span>, nsim <span class="op">=</span> <span class="fl">250</span><span class="op">)</span>          <span class="co"># posterior predictive simulation</span></span>
-<span><span class="fu"><a href="reference/pitResiduals.html">pitResiduals</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                  <span class="co"># PIT scaled residuals</span></span>
-<span><span class="fu"><a href="reference/testUniformity.html">testUniformity</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                <span class="co"># KS test on PIT residuals</span></span>
-<span><span class="fu"><a href="reference/testDispersion.html">testDispersion</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                <span class="co"># over/underdispersion</span></span>
-<span><span class="fu"><a href="reference/testOutliers.html">testOutliers</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                  <span class="co"># simulation envelope test</span></span>
-<span><span class="fu"><a href="reference/testZeroInflation.html">testZeroInflation</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>             <span class="co"># excess zeros</span></span>
+<code class="sourceCode R"><span><span class="co"># Does the model fit? (simulation-based, on residuals)</span></span>
+<span><span class="fu"><a href="reference/testUniformity.html">testUniformity</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                <span class="co"># are residuals uniformly distributed?</span></span>
+<span><span class="fu"><a href="reference/testDispersion.html">testDispersion</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                <span class="co"># more/less variance in residuals than expected?</span></span>
+<span><span class="fu"><a href="reference/testOutliers.html">testOutliers</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                  <span class="co"># sites outside the simulation envelope?</span></span>
+<span><span class="fu"><a href="reference/testZeroInflation.html">testZeroInflation</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>             <span class="co"># more unoccupied sites than the model predicts?</span></span>
 <span></span>
-<span><span class="co"># Spatial / temporal autocorrelation</span></span>
-<span><span class="fu"><a href="reference/moranI.html">moranI</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                        <span class="co"># Moran's I (inverse-distance or k-NN)</span></span>
-<span><span class="fu"><a href="reference/durbinWatson.html">durbinWatson</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                  <span class="co"># Durbin-Watson for temporal models</span></span>
-<span><span class="fu"><a href="reference/variogram.html">variogram</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                     <span class="co"># empirical semivariogram</span></span>
+<span><span class="co"># Is there leftover spatial or temporal structure in residuals?</span></span>
+<span><span class="fu"><a href="reference/moranI.html">moranI</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                        <span class="co"># Moran's I on occupancy residuals</span></span>
+<span><span class="fu"><a href="reference/durbinWatson.html">durbinWatson</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                  <span class="co"># lag-1 autocorrelation across time periods</span></span>
+<span><span class="fu"><a href="reference/variogram.html">variogram</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                     <span class="co"># semivariance of residuals vs distance</span></span>
 <span></span>
-<span><span class="co"># GOF and model comparison</span></span>
-<span><span class="fu"><a href="reference/ppcOccu.html">ppcOccu</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                       <span class="co"># posterior predictive checks</span></span>
-<span><span class="fu"><a href="reference/waicOccu.html">waicOccu</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                      <span class="co"># WAIC</span></span>
-<span><span class="fu"><a href="https://rdrr.io/r/stats/AIC.html" class="external-link">AIC</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>; <span class="fu"><a href="https://rdrr.io/r/stats/AIC.html" class="external-link">BIC</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                 <span class="co"># information criteria</span></span>
+<span><span class="co"># One-call panel: QQ plot, residuals vs fitted, dispersion, correlogram</span></span>
+<span><span class="fu"><a href="reference/checkModel.html">checkModel</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># One-call diagnostic panel</span></span>
-<span><span class="fu"><a href="reference/checkModel.html">checkModel</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>                    <span class="co"># QQ, residuals, dispersion, correlogram</span></span></code></pre></div>
-<p>If DHARMa is installed, <code>dharma(fit)</code> creates a full DHARMa object.</p>
+<span><span class="co"># Before fitting: flag identifiability problems in the data</span></span>
+<span><span class="fu"><a href="reference/checkIdentifiability.html">checkIdentifiability</a></span><span class="op">(</span><span class="va">dat</span><span class="op">)</span></span>
+<span><span class="fu"><a href="reference/checkIdentifiability.html">checkIdentifiability</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>          <span class="co"># also works post-fit (boundary estimates, collapsed REs)</span></span></code></pre></div>
+<p>Also available: <code><a href="reference/ppcOccu.html">ppcOccu()</a></code> (posterior predictive checks), <code><a href="reference/waicOccu.html">waicOccu()</a></code>, <code><a href="https://rdrr.io/r/stats/AIC.html" class="external-link">AIC()</a></code>, <code><a href="https://rdrr.io/r/stats/AIC.html" class="external-link">BIC()</a></code>, <code><a href="reference/pitResiduals.html">pitResiduals()</a></code>, <code><a href="https://rdrr.io/r/stats/simulate.html" class="external-link">simulate()</a></code>. If <a href="https://cran.r-project.org/package=DHARMa" class="external-link">DHARMa</a> is installed, <code>dharma(fit)</code> creates a full DHARMa object.</p>
 </div>
 <div class="section level3">
 <h3 id="model-selection--averaging">Model Selection &amp; Averaging<a class="anchor" aria-label="anchor" href="#model-selection--averaging"></a>
@@ -257,9 +307,24 @@ A fast alternative to MCMC for occupancy modelling.
 <h2 id="usage">Usage<a class="anchor" aria-label="anchor" href="#usage"></a>
 </h2>
 <div class="section level3">
+<h3 id="from-a-dataframe">From a data.frame<a class="anchor" aria-label="anchor" href="#from-a-dataframe"></a>
+</h3>
+<p><code><a href="reference/occu_data.html">occu_data()</a></code> takes a long-format data.frame (one row per site-visit) and builds the list that <code><a href="reference/occu.html">occu()</a></code> expects. Three columns are required: a detection column (0/1/NA), a site ID, and a visit number. Everything else is treated as a covariate. Columns that are constant within a site become occupancy covariates; columns that vary become detection covariates.</p>
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">dat</span> <span class="op">&lt;-</span> <span class="va">df</span> <span class="op">|&gt;</span> <span class="fu"><a href="reference/occu_data.html">occu_data</a></span><span class="op">(</span>y <span class="op">=</span> <span class="st">"detected"</span>, site <span class="op">=</span> <span class="st">"site"</span>, visit <span class="op">=</span> <span class="st">"visit"</span><span class="op">)</span></span>
+<span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">elev</span>, <span class="op">~</span> <span class="va">effort</span>, data <span class="op">=</span> <span class="va">dat</span><span class="op">)</span></span></code></pre></div>
+<p><strong>How NAs are handled:</strong></p>
+<ul>
+<li>
+<strong>Detection matrix (y):</strong> NA means “not surveyed.” These cells are excluded from the likelihood. Sites with fewer visits than the maximum are NA-filled automatically, so unequal survey effort works out of the box.</li>
+<li>
+<strong>Covariates:</strong> NAs in occupancy covariates drop the entire site. NAs in detection covariates drop that visit. A warning is issued at data formatting time so you know before fitting.</li>
+</ul>
+</div>
+<div class="section level3">
 <h3 id="single-species-with-random-effects">Single-species with random effects<a class="anchor" aria-label="anchor" href="#single-species-with-random-effects"></a>
 </h3>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">sim</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/simulate_occu.html">simulate_occu</a></span><span class="op">(</span>N <span class="op">=</span> <span class="fl">200</span>, J <span class="op">=</span> <span class="fl">4</span>, seed <span class="op">=</span> <span class="fl">42</span><span class="op">)</span></span>
 <span><span class="va">sim</span><span class="op">$</span><span class="va">data</span><span class="op">$</span><span class="va">occ.covs</span><span class="op">$</span><span class="va">region</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/sample.html" class="external-link">sample</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">5</span>, <span class="fl">200</span>, replace <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
 <span></span>
@@ -273,16 +338,31 @@ A fast alternative to MCMC for occupancy modelling.
 <div class="section level3">
 <h3 id="spatial-model">Spatial model<a class="anchor" aria-label="anchor" href="#spatial-model"></a>
 </h3>
-<div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">sim</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/simulate_occu.html">simulate_occu</a></span><span class="op">(</span>N <span class="op">=</span> <span class="fl">200</span>, J <span class="op">=</span> <span class="fl">4</span>, spatial_range <span class="op">=</span> <span class="fl">0.2</span>, seed <span class="op">=</span> <span class="fl">123</span><span class="op">)</span></span>
 <span></span>
+<span><span class="co"># Auto-scaled mesh from coordinate extent</span></span>
 <span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">occ_x1</span>, <span class="op">~</span> <span class="va">det_x1</span>, data <span class="op">=</span> <span class="va">sim</span><span class="op">$</span><span class="va">data</span>, spatial <span class="op">=</span> <span class="va">sim</span><span class="op">$</span><span class="va">data</span><span class="op">$</span><span class="va">coords</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Control mesh resolution (units match your CRS; metres for UTM)</span></span>
+<span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">occ_x1</span>, <span class="op">~</span> <span class="va">det_x1</span>, data <span class="op">=</span> <span class="va">sim</span><span class="op">$</span><span class="va">data</span>,</span>
+<span>            spatial <span class="op">=</span> <span class="va">sim</span><span class="op">$</span><span class="va">data</span><span class="op">$</span><span class="va">coords</span>,</span>
+<span>            spde.args <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>max.edge <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">5000</span>, <span class="fl">15000</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Or build the spatial object explicitly</span></span>
+<span><span class="va">sp</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu_spatial.html">occu_spatial</a></span><span class="op">(</span><span class="va">coords</span>,</span>
+<span>                   max.edge <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">5000</span>, <span class="fl">15000</span><span class="op">)</span>,    <span class="co"># triangle edges in CRS units</span></span>
+<span>                   cutoff <span class="op">=</span> <span class="fl">1000</span>,                 <span class="co"># min distance between nodes</span></span>
+<span>                   prior.range <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">20000</span>, <span class="fl">0.5</span><span class="op">)</span>,   <span class="co"># P(range &lt; 20km) = 0.5</span></span>
+<span>                   prior.sigma <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1</span>, <span class="fl">0.5</span><span class="op">)</span><span class="op">)</span>       <span class="co"># P(sigma &gt; 1) = 0.5</span></span>
+<span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">occ_x1</span>, <span class="op">~</span> <span class="va">det_x1</span>, data <span class="op">=</span> <span class="va">sim</span><span class="op">$</span><span class="va">data</span>, spatial <span class="op">=</span> <span class="va">sp</span><span class="op">)</span></span>
+<span></span>
 <span><span class="fu"><a href="reference/moranI.html">moranI</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>  <span class="co"># check residual spatial autocorrelation</span></span></code></pre></div>
 </div>
 <div class="section level3">
 <h3 id="multi-species-community-model">Multi-species community model<a class="anchor" aria-label="anchor" href="#multi-species-community-model"></a>
 </h3>
-<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">sim_ms</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/simMsOcc.html">simMsOcc</a></span><span class="op">(</span>N <span class="op">=</span> <span class="fl">100</span>, J <span class="op">=</span> <span class="fl">3</span>, n_species <span class="op">=</span> <span class="fl">10</span>, seed <span class="op">=</span> <span class="fl">200</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">occ_x1</span>, <span class="op">~</span> <span class="va">det_x1</span>, data <span class="op">=</span> <span class="va">sim_ms</span><span class="op">$</span><span class="va">data</span>, multispecies <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
@@ -291,7 +371,7 @@ A fast alternative to MCMC for occupancy modelling.
 <div class="section level3">
 <h3 id="model-averaging">Model averaging<a class="anchor" aria-label="anchor" href="#model-averaging"></a>
 </h3>
-<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">m1</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="fl">1</span>, <span class="op">~</span> <span class="fl">1</span>, data <span class="op">=</span> <span class="va">sim</span><span class="op">$</span><span class="va">data</span><span class="op">)</span></span>
 <span><span class="va">m2</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">occ_x1</span>, <span class="op">~</span> <span class="va">det_x1</span>, data <span class="op">=</span> <span class="va">sim</span><span class="op">$</span><span class="va">data</span><span class="op">)</span></span>
 <span><span class="va">m3</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/occu.html">occu</a></span><span class="op">(</span><span class="op">~</span> <span class="va">occ_x1</span> <span class="op">+</span> <span class="va">occ_x2</span>, <span class="op">~</span> <span class="va">det_x1</span>, data <span class="op">=</span> <span class="va">sim</span><span class="op">$</span><span class="va">data</span><span class="op">)</span></span>
@@ -300,15 +380,26 @@ A fast alternative to MCMC for occupancy modelling.
 </div>
 </div>
 <div class="section level2">
-<h2 id="coming-from-spoccupancy">Coming from spOccupancy?<a class="anchor" aria-label="anchor" href="#coming-from-spoccupancy"></a>
+<h2 id="coming-from-spoccupancy">Coming from <a href="https://www.jeffdoser.com/files/spoccupancy-web/" class="external-link">spOccupancy</a>?<a class="anchor" aria-label="anchor" href="#coming-from-spoccupancy"></a>
 </h2>
-<p>INLAocc accepts the same <code>list(y, occ.covs, det.covs, coords)</code> data format. The main differences: one <code><a href="reference/occu.html">occu()</a></code> function instead of separate model functions, no MCMC tuning parameters, and random slopes are supported in addition to random intercepts.</p>
+<p>INLAocc accepts the same <code>list(y, occ.covs, det.covs, coords)</code> data format. The main differences: one <code><a href="reference/occu.html">occu()</a></code> function instead of separate model functions, no MCMC tuning parameters, and random slopes are supported in addition to random intercepts (spOccupancy ≤ 0.8.1 supports random intercepts only).</p>
 </div>
 <div class="section level2">
 <h2 id="documentation">Documentation<a class="anchor" aria-label="anchor" href="#documentation"></a>
 </h2>
 <ul>
 <li><a href="https://gillescolling.com/INLAocc/articles/quickstart.html">Quick Start</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/data-formatting.html">Data Formatting</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/random-effects.html">Random Effects</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/spatial-models.html">Spatial Models</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/svc-models.html">Spatially-Varying Coefficients</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/temporal-models.html">Temporal Models</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/multi-species.html">Multi-Species &amp; Community Models</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/integrated-models.html">Integrated Models</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/diagnostics.html">Diagnostics &amp; Model Selection</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/identifiability.html">Identifiability</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/algorithm-details.html">Algorithm Details</a></li>
+<li><a href="https://gillescolling.com/INLAocc/articles/spoccupancy-migration.html">Migrating from spOccupancy</a></li>
 <li><a href="https://gillescolling.com/INLAocc/reference/">Full Reference</a></li>
 </ul>
 </div>
@@ -323,6 +414,16 @@ A fast alternative to MCMC for occupancy modelling.
 <p><a href="https://buymeacoffee.com/gcol33" class="external-link"><img src="https://img.shields.io/badge/-Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&amp;logoColor=black" alt="Buy Me A Coffee"></a></p>
 </div>
 <div class="section level2">
+<h2 id="references">References<a class="anchor" aria-label="anchor" href="#references"></a>
+</h2>
+<ul>
+<li>Dempster, A. P., Laird, N. M. &amp; Rubin, D. B. (1977). Maximum likelihood from incomplete data via the EM algorithm. <em>Journal of the Royal Statistical Society: Series B</em>, 39(1), 1–38.</li>
+<li>Tanner, M. A. &amp; Wong, W. H. (1987). The calculation of posterior distributions by data augmentation. <em>Journal of the American Statistical Association</em>, 82(398), 528–540.</li>
+<li>Rubin, D. B. (1987). <em>Multiple Imputation for Nonresponse in Surveys</em>. Wiley.</li>
+<li>Rue, H., Martino, S. &amp; Chopin, N. (2009). Approximate Bayesian inference for latent Gaussian models by using integrated nested Laplace approximations. <em>Journal of the Royal Statistical Society: Series B</em>, 71(2), 319–392.</li>
+</ul>
+</div>
+<div class="section level2">
 <h2 id="license">License<a class="anchor" aria-label="anchor" href="#license"></a>
 </h2>
 <p>MIT (see the LICENSE.md file)</p>
@@ -330,12 +431,12 @@ A fast alternative to MCMC for occupancy modelling.
 <div class="section level2">
 <h2 id="citation">Citation<a class="anchor" aria-label="anchor" href="#citation"></a>
 </h2>
-<div class="sourceCode" id="cb13"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb13-1"><a href="#cb13-1" tabindex="-1"></a><span class="co">@software{INLAocc,</span></span>
-<span id="cb13-2"><a href="#cb13-2" tabindex="-1"></a><span class="co">  author = {Colling, Gilles},</span></span>
-<span id="cb13-3"><a href="#cb13-3" tabindex="-1"></a><span class="co">  title = {INLAocc: Occupancy Models via Integrated Nested Laplace Approximation},</span></span>
-<span id="cb13-4"><a href="#cb13-4" tabindex="-1"></a><span class="co">  year = {2026},</span></span>
-<span id="cb13-5"><a href="#cb13-5" tabindex="-1"></a><span class="co">  url = {https://github.com/gcol33/INLAocc}</span></span>
-<span id="cb13-6"><a href="#cb13-6" tabindex="-1"></a><span class="co">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb14"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb14-1"><a href="#cb14-1" tabindex="-1"></a><span class="co">@software{INLAocc,</span></span>
+<span id="cb14-2"><a href="#cb14-2" tabindex="-1"></a><span class="co">  author = {Colling, Gilles},</span></span>
+<span id="cb14-3"><a href="#cb14-3" tabindex="-1"></a><span class="co">  title = {INLAocc: Occupancy Models via Integrated Nested Laplace Approximation},</span></span>
+<span id="cb14-4"><a href="#cb14-4" tabindex="-1"></a><span class="co">  year = {2026},</span></span>
+<span id="cb14-5"><a href="#cb14-5" tabindex="-1"></a><span class="co">  url = {https://github.com/gcol33/INLAocc}</span></span>
+<span id="cb14-6"><a href="#cb14-6" tabindex="-1"></a><span class="co">}</span></span></code></pre></div>
 </div>
 </div>
 

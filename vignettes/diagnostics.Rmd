@@ -69,6 +69,10 @@ of $T$ target different aspects of model fit: variance (dispersion), tail
 behaviour (outliers), the number of all-zero sites (zero inflation), or the
 full distribution (PIT residuals).
 
+This approach is well suited to occupancy models because the standard diagnostic toolkit breaks down when the response is latent. In a logistic regression, you observe 0s and 1s and can compute residuals directly. In an occupancy model, you observe detection histories, not occupancy states. A site with zero detections might be unoccupied or might be occupied with low detection probability. There is no way to compute a residual for occupancy without first deciding whether each site is occupied, which is the quantity you are trying to estimate. Simulation-based diagnostics avoid this circularity. They do not require residuals from the occupancy process at all. Instead, they simulate the full generative model: first draw occupancy states from the fitted occupancy probabilities, then draw detection histories from those states and the fitted detection probabilities. The simulated detection histories are compared to the observed detection histories, and any discrepancy is evaluated in terms of the detection data, which are observed.
+
+The second advantage is generality. The test statistic $T$ can be anything: a variance ratio, a count of zeros, a spatial autocorrelation coefficient, a quantile of the distribution. The reference distribution for $T$ comes from the model's own simulations, not from a theoretical distribution that assumes a particular error structure. This means the same diagnostic framework works for single-season models, multi-season models, spatial models, and multi-species models without modification. The only requirement is that the model can simulate from itself, which any properly specified occupancy model can do.
+
 ## Setup: fit a model to work with
 
 We simulate data with known parameters and fit a model that we will use
@@ -106,19 +110,19 @@ The four panels are:
    overdispersion (more variance than the model predicts). An inverted S
    indicates underdispersion. A systematic shift away from the diagonal
    suggests location bias --- the model is consistently over- or
-   under-predicting.
+   under-predicting. Pay attention to where the deviations occur. Departures at the tails (the upper-right and lower-left corners of the QQ plot) indicate problems with extreme values: outlier sites that the model cannot explain, or heavy-tailed variation in the data. Departures in the middle of the plot point to problems with the mean structure: the model is getting the central tendency wrong, which usually means a missing covariate or a misspecified functional form.
 
 2. **Residuals vs fitted.** Deviance residuals plotted against fitted
    detection probabilities. This should be a formless cloud with no trends.
-   A funnel shape suggests heteroscedasticity. A curved trend suggests a
+   A funnel shape (residuals spreading out as fitted values increase) indicates heteroscedasticity, meaning the variance of the detection process is not constant across sites. A curved trend suggests a
    missing covariate or a wrong functional form (e.g., a linear term where a
-   quadratic is needed).
+   quadratic is needed). A step pattern, where residuals jump at a particular fitted value, suggests a threshold effect in the data that the model's smooth link function cannot capture.
 
 3. **Dispersion histogram.** The variance of site-level detection counts is
    computed for each simulated dataset, producing a reference distribution.
    The red vertical line marks the observed variance. A ratio greater than
    about 1.5 suggests overdispersion; below about 0.7 suggests
-   underdispersion.
+   underdispersion. Overdispersion in occupancy models most often signals unmodelled heterogeneity: missing random effects, unaccounted spatial structure, or a covariate that groups sites into categories with different detection rates. Before adding complexity, check whether a single missing covariate explains the excess variance.
 
 4. **Correlogram.** If site coordinates are available, this panel shows
    Moran's I at increasing numbers of neighbours. A flat line near zero
@@ -185,6 +189,8 @@ true occupancy is lower than estimated (the occupancy submodel is
 misspecified) or that an additional zero-generating process is at work, such
 as a habitat suitability threshold that makes some sites structurally
 unsuitable.
+
+In occupancy models, all-zero detection histories have two possible causes: the site is truly unoccupied, or the species is present but was never detected. The zero-inflation test evaluates whether the observed number of all-zero sites exceeds what the model predicts after accounting for both sources. A significant result means the model is producing too few zeros in simulation, which typically indicates that some sites are structurally unsuitable for the species. For example, a forest bird survey that includes open grassland sites will show excess zeros if the model lacks a forest cover covariate. The model assigns moderate occupancy probability to grassland sites (because it has no information to exclude them), but the species is never there. Adding a habitat suitability covariate usually resolves the zero inflation.
 
 ## Spatial diagnostics
 
@@ -295,6 +301,8 @@ aggregation: `group = 1` computes the statistic by site (sensitive to
 site-level misfit), `group = 2` computes it by visit (sensitive to
 visit-level misfit).
 
+The choice of fit statistic affects what kinds of misfit you detect. Freeman-Tukey is sensitive to both the location and spread of the distribution, making it a good default for overall model assessment. Chi-squared emphasizes individual observations that deviate strongly from their expected values, so it is better at flagging specific problem sites. For a well-specified model, both statistics give similar Bayesian p-values. If Freeman-Tukey passes but chi-squared fails, look for a small number of outlier sites rather than a systematic problem. Use Freeman-Tukey as the default; switch to chi-squared when you suspect that a few individual sites are driving the misfit.
+
 ## Model comparison
 
 ### Information criteria
@@ -316,6 +324,10 @@ candidate set. WAIC (Widely Applicable Information Criterion) is
 recommended for Bayesian models because it uses the full posterior rather
 than a point estimate. AIC and BIC are also available via
 `criterion = "aic"` and `criterion = "bic"`.
+
+WAIC, AIC, and BIC answer related but distinct questions. WAIC uses the full posterior predictive distribution to evaluate model fit, which means it accounts for parameter uncertainty. AIC uses only the maximum likelihood estimate (or in Bayesian contexts, the posterior mode) and adds a penalty equal to the number of parameters. For models with simple fixed-effect structures and flat priors, WAIC and AIC give nearly identical rankings. The differences appear when the model includes informative priors or complex random effects. In those cases, AIC undercounts the effective complexity because it does not account for the prior's regularizing effect, while WAIC captures this through the effective number of parameters $p_{\text{WAIC}}$.
+
+BIC penalizes complexity more heavily than AIC, with the penalty growing as $\log(N)$ instead of a constant 2 per parameter. For large sample sizes, BIC strongly favors simpler models. This is useful when parsimony matters more than predictive accuracy, for instance when selecting a minimal model for population monitoring where the same model will be applied across many years and regions. In practice for occupancy models: use WAIC as the default criterion, AIC as a cross-check (if they disagree, investigate why), and BIC when you need the simplest defensible model. When all three criteria select the same model, you can be confident in the ranking.
 
 ### WAIC decomposition
 
@@ -377,7 +389,7 @@ The default prior on all fixed-effect coefficients is $\mathcal{N}(0, 2.72)$ (pr
 
 To change fixed-effect priors:
 
-```{r prior-fixed, eval = FALSE}
+```{r prior-fixed}
 prior <- occu_priors(
   beta.normal = list(mean = 0, var = 1),    # tighter on occupancy
   alpha.normal = list(mean = 0, var = 2.72)  # default on detection
@@ -392,7 +404,9 @@ PC priors on random effect precision have two parameters: a scale $u$ and a tail
 When to adjust:
 
 - **Few groups (< 5)**: The variance estimate is poorly identified. A tighter prior (e.g., $P(\sigma > 0.5) = 0.01$) prevents unreasonably large variance estimates.
+
 - **Many groups (> 50)**: The data strongly inform the variance. A looser prior (e.g., $P(\sigma > 2) = 0.1$) avoids over-shrinkage.
+
 - **Strong prior knowledge**: If previous studies show between-region SD of about 0.5 on the logit scale, set $P(\sigma > 0.5) = 0.5$ to centre the prior there.
 
 ### Spatial components
@@ -408,6 +422,10 @@ If a posterior is nearly identical to its prior, the data are not informing that
 # Posterior: summary(fit)$occ_fixed shows SD for each coefficient
 # If posterior SD ≈ 1.65, the prior is dominating
 ```
+
+Prior-posterior overlap is a useful diagnostic for individual parameters. If the posterior distribution for a coefficient is nearly identical to the prior, the data contain little information about that parameter. A concrete way to check this: compare the posterior standard deviation to the prior standard deviation. With the default $\mathcal{N}(0, 2.72)$ prior, the prior SD is 1.65. If a coefficient's posterior SD is also around 1.65, the data have not narrowed the estimate beyond what the prior already specified. The posterior mean may differ from zero, but if the width has not changed, the estimate is driven by the prior rather than by the data. This is not necessarily a problem if the prior is well justified, but it means the data do not support inference about that particular effect.
+
+For random effects, the analogous check compares the posterior distribution of the variance (or precision) to the PC prior. The PC prior places most of its mass near zero variance, favoring the simpler model without random effects. If the posterior for the random effect variance sits right on top of the prior, the data cannot distinguish the random effect from noise. This happens when the number of groups is small (fewer than 5 or 6) or when the between-group variance is genuinely small relative to within-group variance. In either case, the random effect is not contributing to the model, and you should consider dropping it.
 
 ## Choosing the number of latent factors
 
@@ -459,15 +477,21 @@ varying the other.
 A practical checklist for diagnosing a fitted occupancy model:
 
 1. **`checkModel(fit)`** --- visual overview of the four key diagnostics.
+
 2. **`testUniformity(fit)`** --- overall calibration of the model.
+
 3. **`testDispersion(fit)`** --- variance structure.
+
 4. **`testZeroInflation(fit)`** --- excess all-zero detection histories.
+
 5. **`moranI(fit)`** --- residual spatial autocorrelation (if site
    coordinates are available).
 6. **`durbinWatson(fit)`** --- residual temporal autocorrelation (if
    multi-season model).
 7. **`compare_models(...)`** --- select the best model from candidates.
+
 8. **`ppcOccu(fit)`** --- Bayesian posterior predictive validation.
+
 9. **`checkIdentifiability(fit)`** --- parameter identifiability.
 
 Steps 1--4 diagnose the current model. Step 5--6 check for structure the
@@ -483,20 +507,28 @@ Common diagnostic failures and their typical remedies:
   Add a spatial random effect via the `spatial` argument to `occu()`. See
   `vignette("spatial-models")`.
 
+  For example, a model for a bird species that uses only climate covariates (temperature, precipitation) will show significant spatial autocorrelation if the species also depends on land cover and land cover is spatially clustered. The climate variables explain some of the spatial pattern, but the residual pattern in land cover leaks into the residuals. Adding a land cover covariate may resolve the autocorrelation without needing a spatial random effect. If it does not, the remaining spatial signal is from unmeasured processes, and a spatial term is needed.
+
 - **Overdispersion (ratio >> 1).** More variance than the model predicts.
   Consider adding site-level random effects, additional covariates, or a
   spatial term. Overdispersion often signals missing heterogeneity rather
   than a wrong distribution.
+
+  A common scenario: a detection model with a single observer-skill covariate, but the survey was conducted by three observers with very different skill levels. If the covariate only captures average experience (years of fieldwork) but not observer-specific quirks (one observer is unusually good at auditory detection, another is color-blind), the residual variation in detection rates across sites will exceed what the model predicts. Adding observer as a random effect, or including observer-specific covariates, will absorb this extra variation.
 
 - **Excess zeros.** More all-zero sites than expected. This can indicate
   that the occupancy submodel needs additional covariates (some sites are
   truly unoccupied for reasons the model does not capture) or that a
   zero-inflated occupancy structure is needed.
 
+  Consider a survey of a forest-dependent species where the sampling design includes sites at the edge of the species' range with marginal habitat. The model, using elevation and canopy cover as covariates, assigns moderate occupancy probability to these marginal sites. But some of them are simply too small or too isolated to support a population, and no combination of the available covariates can separate them from the suitable sites. The result is an excess of all-zero detection histories. Adding a patch size or connectivity covariate, if available, can fix this. If no such covariate exists, a zero-inflated model structure explicitly accounts for the two sources of zeros.
+
 - **Non-uniform PIT residuals.** The model is systematically mis-calibrated.
   Check the functional form of covariates --- try adding polynomial or
   spline terms if a covariate's effect may be nonlinear. Also check for
   missing covariates.
+
+  A typical case is a unimodal relationship between occupancy and elevation: the species is most common at intermediate elevations and absent at both extremes. A linear elevation term forces a monotonic relationship, which under-predicts occupancy at intermediate sites and over-predicts at the extremes. The PIT residuals will show a systematic S-shape or reverse S-shape. Adding a quadratic term (elevation + elevation^2) usually resolves this.
 
 - **Bayesian p-value near 0 or 1.** The model fundamentally cannot
   reproduce the observed data. This usually requires rethinking the model
@@ -504,12 +536,16 @@ Common diagnostic failures and their typical remedies:
   or detection process is specified correctly, whether there is unmodelled
   heterogeneity, or whether the link function is appropriate.
 
+  This failure is qualitatively different from the others. A Bayesian p-value near zero means no set of parameter values under the current model structure can generate data that resemble the observed data. This happens, for instance, when detection probability varies strongly across visits (due to weather or season) but the model uses a constant detection intercept with no visit-level covariates. The model cannot produce the observed pattern of detections regardless of how it sets its parameters.
+
 - **Identifiability warning.** The data do not support the current model
   complexity. Reduce the number of covariates, increase survey effort
   (more sites or more visits per site), use informative priors on detection
   parameters, or fix one submodel to a simpler form while varying the
   other. For multi-species models (`vignette("multi-species")`),
   shared detection parameters across species can improve identifiability.
+
+  A frequent cause is including the same covariate in both the occupancy and detection submodels. For instance, if "distance to road" appears in both submodels, the model must decide whether sites far from roads have low occupancy or low detection (because they are harder to access). With limited data, both explanations fit equally well, and the posterior for that covariate in both submodels becomes wide and uninformative. The fix is to decide, based on ecological reasoning, which submodel the covariate belongs in, and remove it from the other.
 
 ## Convergence troubleshooting
 
@@ -525,7 +561,7 @@ When the EM algorithm does not converge within `max_iter` iterations, the model 
 
 Use `verbose = 2` to monitor per-iteration convergence:
 
-```{r verbose, eval = FALSE}
+```{r verbose}
 fit_debug <- occu(~ occ_x1, ~ det_x1, data = sim$data, verbose = 2)
 ```
 

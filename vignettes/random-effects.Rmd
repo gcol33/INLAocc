@@ -253,7 +253,7 @@ a non-default latent model, a custom prior, or a sum-to-zero constraint ---
 use `occu_re()` directly and pass the result to the `occ.re` or `det.re`
 argument of `occu()`:
 
-```{r occu-re, eval = FALSE}
+```{r occu-re}
 re_spec <- occu_re(
   type  = "intercept",
   group = "group",
@@ -271,11 +271,14 @@ When groups have a natural ordering (e.g., years, age classes), structured
 models are available:
 
 - `"iid"` --- exchangeable (default). No ordering assumed.
+
 - `"ar1"` --- first-order autoregressive. Adjacent groups are correlated.
+
 - `"rw1"` --- random walk of order 1. Smooth trend across ordered groups.
+
 - `"rw2"` --- random walk of order 2. Smoother than rw1.
 
-```{r ar1, eval = FALSE}
+```{r ar1}
 # Temporal random effect with AR(1) structure
 sim$data$occ.covs$year <- rep(2010:2019, each = 30)
 

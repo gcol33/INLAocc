@@ -2,8 +2,19 @@ pandoc: 3.8.3
 pkgdown: 2.2.0
 pkgdown_sha: ~
 articles:
+  algorithm-details: algorithm-details.html
+  data-formatting: data-formatting.html
+  diagnostics: diagnostics.html
+  identifiability: identifiability.html
+  integrated-models: integrated-models.html
+  multi-species: multi-species.html
   quickstart: quickstart.html
-last_built: 2026-03-26T22:32Z
+  random-effects: random-effects.html
+  spatial-models: spatial-models.html
+  spoccupancy-migration: spoccupancy-migration.html
+  svc-models: svc-models.html
+  temporal-models: temporal-models.html
+last_built: 2026-03-28T11:12Z
 urls:
   reference: https://gillescolling.com/INLAocc/reference
   article: https://gillescolling.com/INLAocc/articles

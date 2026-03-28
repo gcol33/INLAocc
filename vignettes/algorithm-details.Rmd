@@ -52,6 +52,7 @@ whether a site is occupied is informed by detection history. MCMC handles this
 by jointly sampling $z$ and all parameters. EM handles it by iteratively:
 
 1. Imputing the missing data ($z$) given current parameters (E-step)
+
 2. Estimating parameters given imputed $z$ (M-step)
 
 Each M-step produces two independent sub-problems --- occupancy regression and
@@ -71,6 +72,8 @@ never detected. A site with high occupancy probability $\hat{\psi}_i$ and low
 detection $\hat{p}_{ij}$ will have $w_i$ close to 1 (likely occupied but
 missed). A site with low $\hat{\psi}_i$ and high $\hat{p}_{ij}$ will have
 $w_i$ close to 0 (likely truly absent).
+
+The weights have a direct interpretation as soft class assignments. Consider a site where the species was never detected. If the current parameter estimates give that site a high occupancy probability (say $\hat{\psi}_i = 0.8$) and a low per-visit detection probability (say $\hat{p}_{ij} = 0.1$ across four visits), then the probability of seeing zero detections given occupancy is $(1 - 0.1)^4 = 0.66$. The site is likely occupied but missed, so $w_i$ is close to 1. Conversely, if occupancy is low ($\hat{\psi}_i = 0.1$) and detection is high ($\hat{p}_{ij} = 0.7$), the probability of four missed visits given occupancy is $(1 - 0.7)^4 = 0.008$. The species was almost certainly absent, and $w_i$ is close to 0. The E-step computes these weights for every undetected site, producing a soft partition of sites into occupied and unoccupied classes that the M-step then uses for regression.
 
 ### M-step: fitting sub-models
 
@@ -95,17 +98,22 @@ Two encodings are used, depending on model structure:
 Each site contributes a single observation $z_i^* \sim \text{Binomial}(M, \psi_i)$ where:
 
 - $z_i^* = M$ if detected ($w_i = 1$)
+
 - $z_i^* = \text{round}(w_i \times M)$ if undetected
+
 - $M = 1000$ controls EM convergence speed (higher $M$ gives more weight to the
   E-step imputation, leading to faster but noisier convergence)
 
 The binomial encoding avoids creating two rows per site and is computationally
 efficient for non-spatial models.
 
+The value $M = 1000$ is a design choice that balances convergence speed against bias. The binomial encoding $z_i^* \sim \text{Binom}(M, \psi_i)$ is a way to inject the E-step weights into a standard GLM framework: a site with weight $w_i = 0.7$ becomes an observation of 700 successes out of 1000 trials. Higher $M$ means each site carries more information in the regression, so the GLM estimates converge faster to the EM solution. But higher $M$ also amplifies the attenuation problem. The EM treats the soft weights as if they were observed data, and the regression sees 700/1000 rather than a hard 0 or 1. This dilutes the predictor-response relationship, pulling regression slopes toward zero. The effect is worse at higher $M$ because the GLM assigns more confidence to the fractional observation. $M = 1000$ gives fast convergence (typically 15-25 iterations) with attenuation that the Gibbs correction can fix afterward. Values much lower ($M = 10$) converge slowly. Values much higher ($M = 10000$) converge in fewer iterations but produce stronger attenuation that requires more Gibbs draws to correct.
+
 *Spatial (weighted Bernoulli encoding):*
 Two rows per undetected site:
 
 - Row 1: $z = 1$ with weight $w_i$
+
 - Row 2: $z = 0$ with weight $1 - w_i$
 
 Detected sites contribute a single row with $z = 1$ and weight 1. This
@@ -129,7 +137,9 @@ settled.
 Typical convergence times:
 
 - Non-spatial models: 10--30 iterations
+
 - Spatial models: 15--40 iterations
+
 - Models with many random effects: 20--50 iterations
 
 ### Initialization
@@ -146,6 +156,8 @@ initialization strategies:
   would come from including unoccupied sites.
 - **Weights**: Computed from the initial occupancy and detection estimates using
   the E-step formula above.
+
+The warm-start logistic regression on "ever detected" gives the EM a much better starting point than the naive alternative of setting all weights to 0.5. Without initialization, the first several EM iterations are spent slowly separating sites into high-occupancy and low-occupancy groups based on covariate values. The logistic regression does this separation in a single step: it fits a standard GLM with the binary "ever detected" indicator as response and the occupancy covariates as predictors. The resulting fitted probabilities are biased (they confound occupancy and detection), but they correctly rank sites by relative occupancy probability. This ranking is what matters for the E-step weights. On simulated data, the warm start reduces the total number of EM iterations by 30-50%, from 40-50 iterations down to 15-25, because the algorithm skips the initial phase of class separation and begins refining immediately.
 
 ### Monotonicity and local optima
 
@@ -176,6 +188,7 @@ there are no latent fields to estimate.
 The performance difference is substantial:
 
 - Per-iteration cost: ~0.05 sec (`glm`) vs. ~0.3 sec (INLA)
+
 - Total for 20 iterations: ~1 sec (`glm`) vs. ~6 sec (INLA)
 
 After EM convergence, a single INLA call is made to compute model-comparison
@@ -226,6 +239,7 @@ $$w_i^{(t)} = \lambda \cdot w_i^{(t-1)} + (1 - \lambda) \cdot w_i^{(\text{new})}
 where $\lambda$ is the damping factor:
 
 - $\lambda = 0$: fully updated (aggressive, uses only the new E-step value)
+
 - $\lambda = 0.9$: mostly retains the old value (conservative)
 
 INLAocc uses an adaptive damping strategy:
@@ -251,6 +265,7 @@ converge faster. INLAocc exploits this asymmetry:
 - When $\max|\Delta p| < \text{tol}$ for 2 consecutive iterations, detection
   estimates are frozen.
 - Subsequent EM iterations update only the occupancy model.
+
 - The frozen detection estimates are still used to compute E-step weights.
 
 This saves approximately 30% of computation in later iterations, because the
@@ -275,11 +290,17 @@ small when detection is high (most sites are detected, so most weights are 1)
 but can be substantial when detection is low:
 
 - $p > 0.3$: attenuation typically < 5%
+
 - $p \approx 0.15\text{--}0.3$: attenuation of 5--15%
+
 - $p < 0.15$: attenuation of 10--30%
 
 Without correction, occupancy covariate effect estimates may be noticeably too
 small, which affects ecological inference.
+
+To see why attenuation happens, consider a concrete example. Suppose the true occupancy model has a strong positive effect of forest cover: sites with high forest cover have occupancy probability 0.9, and sites with low forest cover have occupancy probability 0.1. Now suppose detection is low ($p = 0.15$ per visit, four visits). Many occupied sites will have zero detections. For a high-forest site that was never detected, the E-step might assign a weight of $w = 0.85$. This site contributes 85% as much as a detected site to the occupancy regression. Across many such sites, the regression sees a diluted version of the forest cover effect: instead of observing a clean separation between occupied (1) and unoccupied (0) sites along the forest gradient, it sees a blurred separation where many high-forest sites have weights of 0.7-0.9 instead of 1. The regression coefficient is pulled toward zero because the contrast between high-forest and low-forest sites is weakened.
+
+The severity of attenuation depends on how many sites have ambiguous weights. When detection is high ($p > 0.5$), most occupied sites are detected ($w = 1$), and the few undetected occupied sites have low weights (close to 0) because the model correctly infers they are probably absent. The dilution is mild. When detection is low ($p < 0.15$), many occupied sites go undetected, and their weights cluster in the ambiguous range (0.3-0.7). The regression sees a large number of sites that are "sort of occupied," and the estimated slopes shrink accordingly. The Gibbs correction fixes this by replacing each soft weight with a binary draw: $z_i \sim \text{Bernoulli}(w_i)$. A site with $w = 0.85$ has an 85% chance of being assigned $z = 1$ and a 15% chance of $z = 0$. The regression now sees hard 0s and 1s, restoring the full contrast between occupied and unoccupied sites.
 
 ### The Gibbs correction
 
@@ -399,9 +420,11 @@ modern desktop (single core, $N = 500$ sites, $J = 4$ visits):
 Memory usage:
 
 - Detection data frame: $O(N \times J)$ rows in long format
+
 - Occupancy data frame: $O(N)$ rows (non-spatial) or $O(2N)$ (spatial, weighted
   Bernoulli encoding)
 - INLA objects: ~50--200 MB for spatial models (mesh + precision matrices)
+
 - Total: typically < 1 GB for $N < 5000$
 
 Multi-species models are fitted independently per species and scale linearly.
@@ -430,6 +453,8 @@ The SPDE mesh is constructed once before the EM loop begins. At each M-step iter
 Each species is fitted by a separate EM-INLA run. The species-level fits are independent conditional on the community hyperparameters, which are estimated after all species complete. When `INLAocc.cores > 1`, the species fits are dispatched to parallel workers.
 
 The community-level means and variances ($\boldsymbol{\mu}_\beta$, $\boldsymbol{\Sigma}_\beta$) are estimated from the species-level posterior means using empirical Bayes: the sample mean and variance of the species coefficients provide the community distribution parameters. This is an approximation --- full Bayes would iterate between species fits and community estimation --- but it is fast and produces community estimates that closely match MCMC for assemblages with 10+ species.
+
+The empirical Bayes approach works well because the community-level distribution is estimated from $S$ data points (one coefficient vector per species). When $S > 10$, the sample mean and variance of the species-level coefficients are stable estimates of the community distribution, and the resulting shrinkage is similar to what full Bayes would produce. For $S < 5$, the community estimates become noisy: the sample variance of 3-4 points is unreliable, so the shrinkage can be too aggressive (if the sample variance is underestimated) or too weak (if overestimated). A full Bayesian approach that iterates between species-level fits and community parameter estimation handles small $S$ better because it propagates uncertainty in the community distribution back to the species-level estimates. But this iteration is much slower, requiring multiple passes through all species. For most community ecology datasets with 10 or more species, the empirical Bayes approximation is adequate.
 
 ### Integrated models
 
@@ -483,6 +508,10 @@ In these cases, MCMC (via spOccupancy or similar) remains the gold standard.
 For the majority of applied occupancy analyses --- moderate sample sizes, decent
 detection rates, standard model structures --- the EM-INLA approach produces
 indistinguishable results at a fraction of the computational cost.
+
+In practice, INLA is the better choice when you need results in minutes rather than hours: exploratory analysis, screening many candidate model structures, or working with large datasets where MCMC would take days. It is also preferable when you need deterministic reproducibility (the same input always gives the same output, which simplifies debugging and reporting) or when you are comparing many models via WAIC, since WAIC computation comes for free from the INLA fit. MCMC is the better choice when you need the full joint posterior distribution for custom derived quantities. For example, computing the probability that species A and B co-occur at a new site requires sampling from the joint posterior of both species' occupancy parameters and evaluating their correlation. INLA gives marginal posteriors, not the joint, so this kind of derived quantity requires additional work. MCMC is also preferable when you need posterior predictive p-values that fully account for parameter uncertainty, or when the posterior is expected to be non-Gaussian (multimodal, heavy-tailed, or strongly skewed).
+
+For most applied ecology workflows, the choice is clear before you fit anything. If your analysis plan involves reporting coefficient estimates, occupancy maps, and model comparison tables, INLA gives equivalent results faster. If your analysis plan involves custom derived quantities from the joint posterior, or if you have strong reasons to expect a non-Gaussian posterior (very small sample size, near-boundary estimates, complex hierarchical structure with few groups), start with MCMC. You rarely need to try both approaches on the same dataset to decide.
 
 ## Numerical stability
 

@@ -187,6 +187,7 @@ You may need manual control when:
 - **Sites are clustered** (e.g., along roads or rivers) --- the auto-mesh may
   waste nodes in empty regions.
 - **The study extent is very large** --- a coarser mesh saves computation.
+
 - **You have strong prior knowledge** about the spatial range --- tighter PC
   priors can stabilise estimation.
 
@@ -203,7 +204,7 @@ sp
 
 Then pass the pre-built object to `occu()`:
 
-```{r fit-custom-mesh}
+```{r fit-custom-mesh, eval = FALSE}
 fit <- occu(~ occ_x1, ~ det_x1, data = sim$data, spatial = sp, verbose = 0)
 ```
 

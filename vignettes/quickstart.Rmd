@@ -135,6 +135,24 @@ showing the distribution of covariates and the per-site detection frequency:
 plot(sim$data)
 ```
 
+The detection frequency histogram (number of visits per site where the species
+was detected) is the first thing to examine. A distribution concentrated at zero
+means either the species is rare or detection probability is low --- the model
+will try to disentangle these, but extremely sparse data (say, detections at
+fewer than 10% of sites) makes parameter estimation unstable. At the other
+extreme, if the species is detected on every visit at most sites, there is
+little information to separate occupancy from detection, because the "all-zero"
+sites that drive the occupancy estimate are rare.
+
+Check the covariate histograms for extreme skew, outliers, or gaps. Covariates
+that are strongly skewed or have a few extreme values can dominate the linear
+predictor, pulling fitted probabilities toward 0 or 1 for those observations.
+Centering and scaling covariates before fitting (which `simulate_occu()` does by
+default) mitigates this. Also check for missing visits --- `NA` entries in the
+detection matrix are handled by the likelihood, but sites with only one valid
+visit out of four contribute less information about detection probability, and
+many such sites can widen credible intervals.
+
 
 ## Fitting the basic model
 
@@ -163,6 +181,27 @@ detection rate, as expected. Accounting for imperfect detection reveals
 sites that were occupied but the species went undetected across all four
 visits.
 
+The occupancy summary table reports posterior means, standard deviations, and
+95% credible intervals for each coefficient on the logit scale. The intercept
+($\beta_0$) sets the baseline occupancy probability when all covariates are at
+zero: an intercept of 0.5 corresponds to $\text{logit}^{-1}(0.5) \approx 0.62$,
+meaning about 62% of sites are occupied at the covariate mean. Each slope
+coefficient gives the change in log-odds per unit increase in the covariate. A
+coefficient of $-0.8$ means a one-unit increase drops the log-odds of occupancy
+by 0.8, which is a substantial effect --- roughly halving the odds.
+
+The detection intercept has a parallel interpretation. An intercept of 0
+translates to $\text{logit}^{-1}(0) = 0.5$, meaning a 50% chance of detecting
+the species on any single visit when detection covariates are at zero. This
+baseline matters for survey design: if per-visit detection is 0.5 and you have 4
+visits, the probability of detecting a present species at least once is
+$1 - (1 - 0.5)^4 = 0.94$. Pushing detection above 0.7 per visit (through
+better survey methods or more effort) would raise this to 0.99. Conversely, if
+the detection intercept is strongly negative (say $-1.5$, giving $p \approx
+0.18$), four visits yield only a 55% chance of detecting a present species ---
+and the model must attribute many all-zero sites to missed detections rather
+than true absence, widening the occupancy credible intervals.
+
 Because INLA is deterministic, re-running this code produces identical
 results --- there is no Monte Carlo variability to worry about.
 
@@ -173,6 +212,16 @@ Model checking is not optional. A model that converges is not necessarily a
 model that fits the data well. INLAocc provides simulation-based diagnostics
 through the `checkModel()` function and targeted hypothesis tests through
 `testUniformity()` and `testDispersion()`.
+
+Occupancy models pose a specific diagnostic challenge. The response variable is
+binary (detected or not), so standard residual plots that assume continuous or
+count data are misleading. Worse, the ecological state $z_i$ is latent --- you
+never observe whether a site is truly occupied, only whether the species was
+detected. This means you cannot compute traditional residuals that compare
+observed vs. expected counts at a site. Simulation-based diagnostics sidestep
+both problems: they generate new datasets from the fitted model and compare
+properties of the simulated data to the observed data, without requiring
+distributional assumptions beyond the model itself.
 
 ### Full diagnostic panel
 
@@ -241,6 +290,13 @@ statistics are centred on the observed values. Values near 0 or 1 signal
 systematic misfit. The `group = 1` argument aggregates by site; `group = 2`
 aggregates by visit.
 
+In practice, the diagnostic workflow proceeds in layers. Start with
+`checkModel()` for a visual overview --- the four-panel plot catches most forms
+of misspecification at a glance. If something looks off, run the targeted tests
+(`testUniformity()`, `testDispersion()`) to quantify the concern. Finally, use
+`ppcOccu()` with different summary statistics (`"freeman-tukey"`, `"chi-square"`)
+and grouping variables to probe specific hypotheses about where the model fails.
+
 
 ## Comparing true vs. estimated parameters
 
@@ -296,11 +352,25 @@ variance). High precision means low between-group variation --- the groups do
 not differ substantially after accounting for the covariates. This is expected
 here, since we simulated the data without any grouping structure.
 
+To convert precision to a standard deviation, take $\sigma = 1 / \sqrt{\tau}$.
+A precision of 4 corresponds to $\sigma = 0.5$, meaning groups differ by about
+1 unit on the logit scale ($\pm 2\sigma$). What does that look like in
+practice? If the mean occupancy is 0.5 (logit = 0), a group-level SD of 0.5
+shifts the logit to roughly $-1$ and $+1$ at the extremes, giving occupancy
+probabilities between about 0.27 and 0.73 --- meaningful ecological variation. A
+SD of 0.1, by contrast, keeps all groups between 0.48 and 0.52, which is
+negligible. When reporting results, always convert precision to SD for
+interpretability. Precision values are useful for INLA's internal
+parameterization but carry no ecological intuition.
+
 The supported random effect syntaxes are:
 
 - `(1 | group)` --- random intercept per level of `group`
+
 - `(x | group)` --- correlated random intercept and slope for covariate `x`
+
 - `(x || group)` --- uncorrelated random intercept and slope
+
 - `(1 | a/b)` --- nested random effects (random intercept for `b` within `a`)
 
 Random effects work on both the occupancy and detection sides of the model.
@@ -343,6 +413,16 @@ Model averaging is particularly useful when several models have similar WAIC
 values and you want predictions that account for model uncertainty rather than
 conditioning on a single "best" structure.
 
+When interpreting the `delta` column (WAIC difference from the best model),
+standard rules of thumb from Burnham and Anderson (2002) apply: a delta below 2
+means the models are essentially indistinguishable given the data, and model
+averaging is appropriate. A delta between 2 and 7 indicates moderate support for
+the better model, though the weaker model may still contribute usefully in an
+averaging framework. A delta above 10 is strong evidence that the better model
+fits the data substantially more accurately, and the weaker model can be dropped
+from consideration. These thresholds are guidelines, not bright lines ---
+context and sample size matter.
+
 ### K-fold cross-validation
 
 For out-of-sample validation, pass `k.fold` during fitting:
@@ -376,6 +456,17 @@ their sample means, and computes predicted occupancy probabilities with 95%
 credible intervals. The `plot()` method produces a ribbon plot with the
 posterior mean and credible band. Because `occ_x1` has a negative coefficient,
 the plot shows occupancy declining from left to right.
+
+Marginal effects differ from raw coefficient interpretation in an important way.
+The coefficients are on the logit scale, where a one-unit change always
+corresponds to the same change in log-odds. But on the probability scale, the
+effect is nonlinear. A unit increase in a covariate has the largest impact on
+probability when the baseline is near 0.5 (the steepest part of the logistic
+curve) and a diminishing impact as the baseline approaches 0 or 1. A coefficient
+of $-0.8$ drops occupancy from 0.62 to 0.43 when the baseline logit is 0.5, but
+only from 0.12 to 0.07 when the baseline logit is $-2$. Marginal effect plots
+capture this nonlinearity directly, showing the actual probability change across
+the covariate range rather than a constant slope.
 
 ### Prediction at new covariate values
 
@@ -425,8 +516,18 @@ interoperable with tools you already know:
 
 ## What's next
 
-This vignette covered the core single-species workflow. INLAocc supports
-substantially more complex models through the same `occu()` interface:
+This vignette covered the core single-species workflow. A recommended analysis
+sequence: start with the intercept-only model to establish baseline occupancy
+and detection rates, then add covariates guided by ecological hypotheses. Check
+diagnostics at each step --- a model that fits well without covariates but fails
+after adding them suggests a misspecified functional form (e.g., a quadratic
+effect forced through a linear term). Add random effects only when the study
+design includes genuine grouping structure, not as a generic variance sponge.
+Compare models with WAIC, and report marginal effects rather than raw
+coefficients for biological interpretation.
+
+INLAocc supports substantially more complex models through the same `occu()`
+interface:
 
 - **Spatial models.** When sites are spatially correlated, add an SPDE random
   field by passing coordinates to the `spatial` argument. See

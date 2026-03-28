@@ -26,6 +26,7 @@ occu(
   max.iter = 50L,
   tol = 1e-04,
   damping = 0.3,
+  correction = "auto",
   ensemble = FALSE,
   num.threads = "1:1",
   k.fold = 0L,

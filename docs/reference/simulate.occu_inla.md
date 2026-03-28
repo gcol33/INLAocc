@@ -10,6 +10,9 @@ suitable for DHARMa's `createDHARMa()`.
 ``` r
 # S3 method for class 'occu_inla'
 simulate(object, nsim = 250L, seed = 123L, level = c("site", "obs"), ...)
+
+# S3 method for class 'occu_inla_temporal'
+simulate(object, nsim = 250L, seed = 123L, level = c("site", "obs"), ...)
 ```
 
 ## Arguments

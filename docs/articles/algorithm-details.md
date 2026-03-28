@@ -1,0 +1,805 @@
+# Algorithm Details
+
+## Introduction
+
+INLAocc replaces MCMC with a deterministic EM algorithm that uses INLA
+at each M-step. This vignette describes the algorithm in detail — useful
+for understanding convergence behavior, tuning decisions, and when the
+approximation may deviate from exact MCMC posteriors. It is the INLAocc
+equivalent of spOccupancy’s MCMC sampler documentation, rewritten for a
+fundamentally different computational approach.
+
+Readers who just want to fit models can skip this vignette entirely. The
+[Quick Start](https://gillescolling.com/INLAocc/articles/quickstart.md)
+and
+[Diagnostics](https://gillescolling.com/INLAocc/articles/diagnostics.md)
+vignettes cover everything needed for applied use. This document is
+intended for those who want to understand what the algorithm actually
+does — whether to diagnose convergence issues, decide when the EM
+approximation is appropriate, or extend the algorithm for new model
+types.
+
+## The EM algorithm for occupancy models
+
+### Why EM?
+
+The occupancy likelihood marginalizes over the latent state \\z\\:
+
+\\L(\boldsymbol{\theta}) = \prod\_{i=1}^N \left\[(1 - \psi_i) \prod\_{j}
+(1 - y\_{ij}) + \psi_i \prod\_{j} p\_{ij}^{y\_{ij}} (1 - p\_{ij})^{1 -
+y\_{ij}}\right\]\\
+
+This is a mixture model (occupied vs. unoccupied) that does not factor
+into separate occupancy and detection terms. The two processes are
+coupled through the latent state \\z_i\\: detection is only meaningful
+at occupied sites, and whether a site is occupied is informed by
+detection history. MCMC handles this by jointly sampling \\z\\ and all
+parameters. EM handles it by iteratively:
+
+1.  Imputing the missing data (\\z\\) given current parameters (E-step)
+
+2.  Estimating parameters given imputed \\z\\ (M-step)
+
+Each M-step produces two independent sub-problems — occupancy regression
+and detection regression — that can be solved with standard tools (GLM
+or INLA).
+
+### E-step: computing weights
+
+For each site \\i\\, the E-step computes the posterior probability of
+occupancy given the observed detection history and current parameter
+estimates:
+
+\\w_i = P(z_i = 1 \mid \mathbf{y}\_i, \hat{\boldsymbol{\theta}}) =
+\begin{cases} 1 & \text{if } \sum_j y\_{ij} \> 0 \text{ (detected)} \\
+\frac{\hat{\psi}\_i \prod_j (1 - \hat{p}\_{ij})}{\hat{\psi}\_i \prod_j
+(1 - \hat{p}\_{ij}) + (1 - \hat{\psi}\_i)} & \text{if } \sum_j y\_{ij} =
+0 \text{ (undetected)} \end{cases}\\
+
+Detected sites always have \\w_i = 1\\ — if the species was observed at
+least once, it is occupied. Undetected sites have \\w_i \in (0, 1)\\,
+representing the posterior probability of occupancy given that the
+species was never detected. A site with high occupancy probability
+\\\hat{\psi}\_i\\ and low detection \\\hat{p}\_{ij}\\ will have \\w_i\\
+close to 1 (likely occupied but missed). A site with low
+\\\hat{\psi}\_i\\ and high \\\hat{p}\_{ij}\\ will have \\w_i\\ close to
+0 (likely truly absent).
+
+The weights have a direct interpretation as soft class assignments.
+Consider a site where the species was never detected. If the current
+parameter estimates give that site a high occupancy probability (say
+\\\hat{\psi}\_i = 0.8\\) and a low per-visit detection probability (say
+\\\hat{p}\_{ij} = 0.1\\ across four visits), then the probability of
+seeing zero detections given occupancy is \\(1 - 0.1)^4 = 0.66\\. The
+site is likely occupied but missed, so \\w_i\\ is close to 1.
+Conversely, if occupancy is low (\\\hat{\psi}\_i = 0.1\\) and detection
+is high (\\\hat{p}\_{ij} = 0.7\\), the probability of four missed visits
+given occupancy is \\(1 - 0.7)^4 = 0.008\\. The species was almost
+certainly absent, and \\w_i\\ is close to 0. The E-step computes these
+weights for every undetected site, producing a soft partition of sites
+into occupied and unoccupied classes that the M-step then uses for
+regression.
+
+### M-step: fitting sub-models
+
+Given the weights \\w_i\\, the M-step fits two separate regression
+models.
+
+**Detection M-step.** The detection data is converted to long format
+(one row per non-NA visit), weighted by \\w_i\\:
+
+\\y\_{ij} \mid z_i = 1 \sim \text{Bernoulli}(p\_{ij})\\
+
+This is a weighted binomial regression with response \\y\_{ij}\\ and
+weights \\w_i\\. For detected sites (\\w_i = 1\\), all visits contribute
+fully. For undetected sites (\\w_i \< 1\\), visits are downweighted
+proportionally. This makes sense: if we are only 30% sure a site is
+occupied, observations from that site should contribute 30% as much to
+detection estimation.
+
+**Occupancy M-step.** Two encodings are used, depending on model
+structure:
+
+*Non-spatial (binomial encoding):* Each site contributes a single
+observation \\z_i^\* \sim \text{Binomial}(M, \psi_i)\\ where:
+
+- \\z_i^\* = M\\ if detected (\\w_i = 1\\)
+
+- \\z_i^\* = \text{round}(w_i \times M)\\ if undetected
+
+- \\M = 1000\\ controls EM convergence speed (higher \\M\\ gives more
+  weight to the E-step imputation, leading to faster but noisier
+  convergence)
+
+The binomial encoding avoids creating two rows per site and is
+computationally efficient for non-spatial models.
+
+The value \\M = 1000\\ is a design choice that balances convergence
+speed against bias. The binomial encoding \\z_i^\* \sim \text{Binom}(M,
+\psi_i)\\ is a way to inject the E-step weights into a standard GLM
+framework: a site with weight \\w_i = 0.7\\ becomes an observation of
+700 successes out of 1000 trials. Higher \\M\\ means each site carries
+more information in the regression, so the GLM estimates converge faster
+to the EM solution. But higher \\M\\ also amplifies the attenuation
+problem. The EM treats the soft weights as if they were observed data,
+and the regression sees 700/1000 rather than a hard 0 or 1. This dilutes
+the predictor-response relationship, pulling regression slopes toward
+zero. The effect is worse at higher \\M\\ because the GLM assigns more
+confidence to the fractional observation. \\M = 1000\\ gives fast
+convergence (typically 15-25 iterations) with attenuation that the Gibbs
+correction can fix afterward. Values much lower (\\M = 10\\) converge
+slowly. Values much higher (\\M = 10000\\) converge in fewer iterations
+but produce stronger attenuation that requires more Gibbs draws to
+correct.
+
+*Spatial (weighted Bernoulli encoding):* Two rows per undetected site:
+
+- Row 1: \\z = 1\\ with weight \\w_i\\
+
+- Row 2: \\z = 0\\ with weight \\1 - w_i\\
+
+Detected sites contribute a single row with \\z = 1\\ and weight 1. This
+encoding preserves the spatial prior’s influence — the binomial encoding
+with \\M = 1000\\ would overwhelm the SPDE prior, because the data
+“sample size” (\\M = 1000\\ per site) would dominate the spatial
+correlation structure.
+
+### Convergence
+
+The EM algorithm converges when both occupancy and detection estimates
+stabilize:
+
+\\\max_i \|\hat{\psi}\_i^{(t)} - \hat{\psi}\_i^{(t-1)}\| \< \text{tol}
+\quad \text{and} \quad \max\_{ij} \|\hat{p}\_{ij}^{(t)} -
+\hat{p}\_{ij}^{(t-1)}\| \< \text{tol}\\
+
+The default tolerance is `tol = 1e-4`. The algorithm stops when the
+maximum absolute change in both occupancy and detection probability
+across all sites (and visits) falls below this threshold. The maximum is
+used rather than the mean because a single unstable site can indicate
+the algorithm has not yet settled.
+
+Typical convergence times:
+
+- Non-spatial models: 10–30 iterations
+
+- Spatial models: 15–40 iterations
+
+- Models with many random effects: 20–50 iterations
+
+### Initialization
+
+Good starting values reduce EM iterations by 30–50%. INLAocc uses three
+initialization strategies:
+
+- **Occupancy**: A logistic regression of “ever detected” (binary: was
+  the species seen at least once at this site?) on the occupancy
+  covariates. This is better than a naive constant because it captures
+  covariate effects from the start.
+- **Detection**: The pooled naive detection rate computed only from
+  detected sites (sites where \\\sum_j y\_{ij} \> 0\\). This avoids the
+  downward bias that would come from including unoccupied sites.
+- **Weights**: Computed from the initial occupancy and detection
+  estimates using the E-step formula above.
+
+The warm-start logistic regression on “ever detected” gives the EM a
+much better starting point than the naive alternative of setting all
+weights to 0.5. Without initialization, the first several EM iterations
+are spent slowly separating sites into high-occupancy and low-occupancy
+groups based on covariate values. The logistic regression does this
+separation in a single step: it fits a standard GLM with the binary
+“ever detected” indicator as response and the occupancy covariates as
+predictors. The resulting fitted probabilities are biased (they confound
+occupancy and detection), but they correctly rank sites by relative
+occupancy probability. This ranking is what matters for the E-step
+weights. On simulated data, the warm start reduces the total number of
+EM iterations by 30-50%, from 40-50 iterations down to 15-25, because
+the algorithm skips the initial phase of class separation and begins
+refining immediately.
+
+### Monotonicity and local optima
+
+A classical property of EM is that the observed-data log-likelihood is
+non-decreasing across iterations: \\\ell(\boldsymbol{\theta}^{(t+1)})
+\geq \ell(\boldsymbol{\theta}^{(t)})\\. This guarantees convergence to a
+stationary point but not necessarily to the global maximum. In practice,
+occupancy models with standard covariate structures have a single mode,
+and the initialization strategy (Section 2.5) reliably finds it.
+Multimodality can arise with complex random effect structures or highly
+collinear covariates, but this is rare in applied settings.
+
+The adaptive damping strategy (Section 5) can temporarily violate strict
+monotonicity of the observed-data likelihood, because the damped weights
+do not correspond to the exact E-step for any parameter value. However,
+the violations are small and transient — the algorithm still converges
+to the same fixed point as undamped EM, just with fewer oscillations
+along the way.
+
+## The GLM fast path
+
+When the model has no random effects and no spatial component, INLAocc
+bypasses INLA entirely and uses R’s
+[`glm()`](https://rdrr.io/r/stats/glm.html) for the M-step. The logic is
+simple: [`glm()`](https://rdrr.io/r/stats/glm.html) solves weighted
+binomial regression via iteratively reweighted least squares (IRLS),
+which takes microseconds for the typical occupancy dataset. INLA, by
+contrast, carries overhead for setting up the latent Gaussian model,
+even when there are no latent fields to estimate.
+
+The performance difference is substantial:
+
+- Per-iteration cost: ~0.05 sec (`glm`) vs. ~0.3 sec (INLA)
+
+- Total for 20 iterations: ~1 sec (`glm`) vs. ~6 sec (INLA)
+
+After EM convergence, a single INLA call is made to compute
+model-comparison quantities (DIC, WAIC) and the full posterior
+configuration. This gives the user the same output interface regardless
+of which engine ran the EM loop.
+
+The GLM fast path is selected automatically. Users do not need to
+request it. Any model specified without random effects (`(1 | group)`)
+or spatial terms (`spde(coords)`) will use the fast path.
+
+## INLA at the M-step
+
+When random effects or spatial structure are present, INLA is called at
+every M-step iteration. Three aspects of the INLA integration matter for
+performance:
+
+**Laplace approximation.** INLA approximates the joint posterior of
+hyperparameters (random effect variances, spatial range and marginal
+variance) using numerical integration, and uses the Laplace
+approximation for the conditional posterior of fixed effects given
+hyperparameters. This is fast but introduces approximation error. For
+occupancy models with moderate sample sizes (\\N \> 100\\) and
+reasonable detection rates (\\p \> 0.15\\), the approximation error is
+negligible compared to other sources of uncertainty.
+
+**Warm-starting.** Each EM iteration’s INLA call is warm-started from
+the previous iteration’s mode. The previous mode vector
+(\\\boldsymbol{\theta}\\, \\\mathbf{x}\\) is passed via
+`control.mode = list(theta = prev_theta, restart = TRUE)`, which tells
+INLA to begin its optimization from the previous solution rather than
+from scratch. Because consecutive EM iterations produce similar
+parameter values, the warm start typically saves 40–60% of INLA’s
+per-call cost.
+
+**Sparse computation.** Spatial models using the SPDE approach represent
+the Gaussian random field via a sparse precision matrix (inverse
+covariance) on a triangulated mesh. INLA exploits this sparsity for
+\\O(n)\\ computation of the conditional distributions, compared to
+\\O(n^3)\\ for dense covariance matrices. This is what makes spatial
+occupancy models with thousands of sites feasible.
+
+## Adaptive damping
+
+Raw E-step weight updates can oscillate, particularly when detection
+probability is high and many sites are near the occupancy boundary
+(\\\hat{\psi}\_i \approx 0.5\\). Damping smooths the updates:
+
+\\w_i^{(t)} = \lambda \cdot w_i^{(t-1)} + (1 - \lambda) \cdot
+w_i^{(\text{new})}\\
+
+where \\\lambda\\ is the damping factor:
+
+- \\\lambda = 0\\: fully updated (aggressive, uses only the new E-step
+  value)
+
+- \\\lambda = 0.9\\: mostly retains the old value (conservative)
+
+INLAocc uses an adaptive damping strategy:
+
+1.  **Start aggressive**: \\\lambda = \max(\text{user\\damp}, 0.1)\\ to
+    make fast initial progress.
+2.  **Increase if oscillating**: If \\\max\|\Delta\psi\|\\ increases
+    compared to the previous iteration, \\\lambda\\ is increased (more
+    damping), capped at 0.9.
+3.  **Decrease if converging**: If \\\max\|\Delta\psi\|\\ drops by more
+    than 50% compared to the previous iteration, \\\lambda\\ is
+    decreased toward the floor value to allow faster final convergence.
+
+This prevents divergence in difficult regions of the parameter space
+while allowing rapid convergence when the objective function is
+well-behaved. In practice, the damping factor typically starts near 0.1,
+rises to 0.3–0.5 in the middle iterations, and drops back toward 0.1 as
+the algorithm converges.
+
+## Detection freezing
+
+Detection models typically have fewer parameters than occupancy models
+and converge faster. INLAocc exploits this asymmetry:
+
+- When \\\max\|\Delta p\| \< \text{tol}\\ for 2 consecutive iterations,
+  detection estimates are frozen.
+
+- Subsequent EM iterations update only the occupancy model.
+
+- The frozen detection estimates are still used to compute E-step
+  weights.
+
+This saves approximately 30% of computation in later iterations, because
+the detection M-step (which involves the long-format data frame with \\N
+\times J\\ rows) is skipped entirely. Detection freezing is most
+beneficial for models where \\J\\ (visits per site) is large, because
+the detection M-step dominates the per-iteration cost in those cases.
+
+## Gibbs data augmentation (post-EM correction)
+
+### The attenuation problem
+
+The EM algorithm uses soft weights (\\w_i \in (0,1)\\) for undetected
+sites. From the perspective of the M-step regression, these fractional
+weights create a “smeared” likelihood: the contribution of each
+undetected site is spread between the occupied and unoccupied classes
+rather than committed to one or the other.
+
+The consequence is coefficient attenuation. Fixed-effect estimates are
+systematically biased toward zero, because the fractional weights reduce
+the effective contrast between occupied and unoccupied sites. The
+attenuation is small when detection is high (most sites are detected, so
+most weights are 1) but can be substantial when detection is low:
+
+- \\p \> 0.3\\: attenuation typically \< 5%
+
+- \\p \approx 0.15\text{--}0.3\\: attenuation of 5–15%
+
+- \\p \< 0.15\\: attenuation of 10–30%
+
+Without correction, occupancy covariate effect estimates may be
+noticeably too small, which affects ecological inference.
+
+To see why attenuation happens, consider a concrete example. Suppose the
+true occupancy model has a strong positive effect of forest cover: sites
+with high forest cover have occupancy probability 0.9, and sites with
+low forest cover have occupancy probability 0.1. Now suppose detection
+is low (\\p = 0.15\\ per visit, four visits). Many occupied sites will
+have zero detections. For a high-forest site that was never detected,
+the E-step might assign a weight of \\w = 0.85\\. This site contributes
+85% as much as a detected site to the occupancy regression. Across many
+such sites, the regression sees a diluted version of the forest cover
+effect: instead of observing a clean separation between occupied (1) and
+unoccupied (0) sites along the forest gradient, it sees a blurred
+separation where many high-forest sites have weights of 0.7-0.9 instead
+of 1. The regression coefficient is pulled toward zero because the
+contrast between high-forest and low-forest sites is weakened.
+
+The severity of attenuation depends on how many sites have ambiguous
+weights. When detection is high (\\p \> 0.5\\), most occupied sites are
+detected (\\w = 1\\), and the few undetected occupied sites have low
+weights (close to 0) because the model correctly infers they are
+probably absent. The dilution is mild. When detection is low (\\p \<
+0.15\\), many occupied sites go undetected, and their weights cluster in
+the ambiguous range (0.3-0.7). The regression sees a large number of
+sites that are “sort of occupied,” and the estimated slopes shrink
+accordingly. The Gibbs correction fixes this by replacing each soft
+weight with a binary draw: \\z_i \sim \text{Bernoulli}(w_i)\\. A site
+with \\w = 0.85\\ has an 85% chance of being assigned \\z = 1\\ and a
+15% chance of \\z = 0\\. The regression now sees hard 0s and 1s,
+restoring the full contrast between occupied and unoccupied sites.
+
+### The Gibbs correction
+
+After EM converges, a short Gibbs sampling chain replaces the soft
+weights with hard binary imputations:
+
+``` r
+
+# Pseudocode for Gibbs data augmentation
+for (r in seq_len(R)) {
+  # 1. Draw binary z from the soft weights
+  z <- rbinom(n_sites, size = 1, prob = w)
+
+  # 2. Refit occupancy model with binary z (full INLA or GLM call)
+  occ_fit <- fit_occupancy(z, occ_covariates)
+
+  # 3. Refit detection model conditional on z
+  det_fit <- fit_detection(y[z == 1, ], det_covariates)
+
+  # 4. Store coefficient estimates
+  store(occ_fit$coefficients, det_fit$coefficients)
+
+  # 5. Update w from new estimates for next draw
+  w <- compute_weights(occ_fit, det_fit)
+}
+```
+
+Each Gibbs draw produces a complete set of coefficient estimates from a
+model fitted to binary (not fractional) data. The pooled estimates
+across draws — computed as the mean of the draw-specific estimates, with
+standard errors combined via Rubin’s rule — correct the attenuation
+introduced by the EM soft weights.
+
+### Adaptive number of draws
+
+The number of Gibbs draws \\R\\ is selected adaptively based on sample
+size:
+
+\\R = \max\left(10, \lceil 16 - 2\log\_{10}(N) \rceil\right)\\
+
+The rationale:
+
+- **Large \\N\\ (\> 1000)**: 7–10 draws. The EM estimates are already
+  accurate because the law of large numbers stabilizes the soft weights.
+  The correction is small, so few draws suffice.
+- **Small \\N\\ (~50)**: 14–16 draws. The correction matters more
+  because individual site weights have higher variance, and a few extra
+  draws substantially reduce Monte Carlo noise in the pooled estimates.
+- **Burn-in**: The first 3 draws are discarded to allow the Gibbs chain
+  to move away from the EM fixed point.
+
+Users can override the adaptive selection via `gibbs.iter` in the
+[`occu()`](https://gillescolling.com/INLAocc/reference/occu.md) call.
+
+### Warm-starting in Gibbs
+
+Each Gibbs iteration’s INLA call is warm-started from the previous
+iteration’s mode, just as in the EM loop. This is effective because
+consecutive Gibbs draws produce similar data (only the undetected sites
+change, and their imputed values are correlated across draws).
+Warm-starting reduces per-draw INLA cost by 40–50% compared to cold
+starts.
+
+## Posterior inference
+
+After the Gibbs correction, INLAocc constructs posterior summaries from
+two sources:
+
+**Fixed effects.** Means and standard errors are pooled across Gibbs
+draws using Rubin’s combining rule. Let \\\hat{\beta}\_r\\ and
+\\\hat{V}\_r\\ denote the point estimate and variance from draw \\r\\,
+and let \\\bar{\beta} = R^{-1} \sum_r \hat{\beta}\_r\\. The combined
+variance is:
+
+\\V\_{\text{total}} = \underbrace{\frac{1}{R}\sum_r
+\hat{V}\_r}\_{\text{within-draw}} + \underbrace{\left(1 +
+\frac{1}{R}\right) \frac{1}{R-1}\sum_r (\hat{\beta}\_r -
+\bar{\beta})^2}\_{\text{between-draw}}\\
+
+The within-draw term captures uncertainty conditional on a particular
+\\z\\ imputation. The between-draw term captures additional uncertainty
+from not knowing \\z\\. Together, they provide properly calibrated
+confidence intervals.
+
+**Hyperparameters.** Random effect variances, spatial range, and
+marginal variance are taken from the final INLA fit (the last Gibbs
+draw). These quantities are less affected by the soft-weight attenuation
+because they are estimated from the random effect structure, not
+directly from the weighted regression coefficients.
+
+**Posterior samples.** Full posterior samples are generated lazily:
+[`INLA::inla.posterior.sample()`](https://rdrr.io/pkg/INLA/man/posterior.sample.html)
+is called only when the user first accesses the samples via the `$`
+accessor. This avoids the cost of generating samples (~0.5–2 sec for
+spatial models) when they are not needed.
+
+``` r
+
+fit <- occu(~ elevation + forest, ~ time + wind, data = mydata, verbose = 0)
+
+# Posterior samples are generated on first access
+samples <- fit$samples
+
+# Subsequent access uses cached samples
+samples2 <- fit$samples
+```
+
+The posterior is a Gaussian approximation (from INLA) corrected for the
+occupancy/detection coupling (from Gibbs). For well-identified models
+with moderate sample sizes, this is very close to full MCMC posteriors
+(correlation \> 0.99 in benchmarks).
+
+## Computational complexity
+
+The table below summarizes typical runtimes for different model types on
+a modern desktop (single core, \\N = 500\\ sites, \\J = 4\\ visits):
+
+| Model type | Per-iteration cost | Typical iterations | Total |
+|----|----|----|----|
+| Non-spatial, no RE | ~0.05 sec (GLM) | 10–20 | 0.5–1 sec |
+| With RE, no spatial | ~0.3 sec (INLA) | 15–30 | 5–10 sec |
+| Spatial (SPDE) | ~0.5–2 sec (INLA) | 20–40 | 10–60 sec |
+| Spatial + Gibbs correction | ~1–3 sec/draw | 10–16 draws | +10–50 sec |
+| Multi-species (10 spp) | 10x single-species | — | scales linearly |
+
+Memory usage:
+
+- Detection data frame: \\O(N \times J)\\ rows in long format
+
+- Occupancy data frame: \\O(N)\\ rows (non-spatial) or \\O(2N)\\
+  (spatial, weighted Bernoulli encoding)
+
+- INLA objects: ~50–200 MB for spatial models (mesh + precision
+  matrices)
+
+- Total: typically \< 1 GB for \\N \< 5000\\
+
+Multi-species models are fitted independently per species and scale
+linearly. There is no cross-species borrowing of strength (unlike joint
+species distribution models), so 10 species take approximately 10x the
+time of a single species.
+
+## Model-type-specific algorithm notes
+
+The core EM-INLA loop described above applies to all model types. Each
+model variant modifies specific steps.
+
+### Temporal models
+
+The temporal engine stacks all \\N \times T\\ site-period combinations
+into a single occupancy data frame and adds an AR(1) random effect term
+via `f(period, model = "ar1")` in the INLA formula. Detection is fit
+per-period: the detection M-step loops over \\t = 1, \ldots, T\\,
+fitting a separate detection model for each period’s data. The occupancy
+M-step is a single INLA call on the stacked data, which jointly
+estimates the fixed effects and the AR(1) hyperparameters (\\\rho\\,
+\\\sigma^2\_\eta\\).
+
+The E-step extends naturally: for an undetected site in period \\t\\,
+the weight \\w\_{it}\\ depends on the current occupancy estimate
+\\\hat{\psi}\_{it}\\ and the detection probabilities from that period’s
+visits.
+
+### Spatial models
+
+The spatial engine replaces the binomial encoding (\\M = 1000\\) with a
+weighted Bernoulli encoding at the occupancy M-step. Each undetected
+site contributes two rows: one with \\z = 1\\ and weight \\w_i\\, one
+with \\z = 0\\ and weight \\1 - w_i\\. This preserves the SPDE prior’s
+influence, which the binomial encoding with \\M = 1000\\ would
+overwhelm.
+
+The SPDE mesh is constructed once before the EM loop begins. At each
+M-step iteration, the projection matrix \\\mathbf{A}\\ maps mesh nodes
+to site locations. Warm-starting is particularly important here: the
+SPDE hyperparameters (range, variance) converge slowly, and reusing the
+previous mode saves 40-60% of INLA time per iteration.
+
+### Multi-species models
+
+Each species is fitted by a separate EM-INLA run. The species-level fits
+are independent conditional on the community hyperparameters, which are
+estimated after all species complete. When `INLAocc.cores > 1`, the
+species fits are dispatched to parallel workers.
+
+The community-level means and variances (\\\boldsymbol{\mu}\_\beta\\,
+\\\boldsymbol{\Sigma}\_\beta\\) are estimated from the species-level
+posterior means using empirical Bayes: the sample mean and variance of
+the species coefficients provide the community distribution parameters.
+This is an approximation — full Bayes would iterate between species fits
+and community estimation — but it is fast and produces community
+estimates that closely match MCMC for assemblages with 10+ species.
+
+The empirical Bayes approach works well because the community-level
+distribution is estimated from \\S\\ data points (one coefficient vector
+per species). When \\S \> 10\\, the sample mean and variance of the
+species-level coefficients are stable estimates of the community
+distribution, and the resulting shrinkage is similar to what full Bayes
+would produce. For \\S \< 5\\, the community estimates become noisy: the
+sample variance of 3-4 points is unreliable, so the shrinkage can be too
+aggressive (if the sample variance is underestimated) or too weak (if
+overestimated). A full Bayesian approach that iterates between
+species-level fits and community parameter estimation handles small
+\\S\\ better because it propagates uncertainty in the community
+distribution back to the species-level estimates. But this iteration is
+much slower, requiring multiple passes through all species. For most
+community ecology datasets with 10 or more species, the empirical Bayes
+approximation is adequate.
+
+### Integrated models
+
+The integrated engine runs source-specific detection M-steps (one per
+data source) and a shared occupancy M-step. The E-step computes weights
+for each site by combining detection probabilities across all sources
+that surveyed that site:
+
+\\w_i = \frac{\hat{\psi}\_i \prod\_{d \in \mathcal{D}\_i} \prod_j (1 -
+\hat{p}\_{ijd})}{\hat{\psi}\_i \prod\_{d \in \mathcal{D}\_i} \prod_j
+(1 - \hat{p}\_{ijd}) + (1 - \hat{\psi}\_i)}\\
+
+where \\\mathcal{D}\_i\\ is the set of sources that surveyed site \\i\\.
+Sites surveyed by multiple sources accumulate non-detection evidence
+from all of them, making the posterior occupancy weight more precise.
+
+### SVC models
+
+The SVC engine adds one or more additional spatial random effect terms
+to the occupancy INLA formula. Each SVC covariate \\k\\ gets a term
+`f(svc_idx_k, model = "iid")` that interacts with the covariate values.
+The SPDE mesh is shared between the intercept spatial field and the SVC
+field(s), but each has independent range and variance hyperparameters.
+
+The key computational cost is that each SVC adds a spatial field with
+its own set of mesh-node coefficients. With \\K\\ SVCs and \\M\\ mesh
+nodes, the latent field has \\(K + 1) \times M\\ elements (one spatial
+field per SVC plus the intercept field). INLA’s sparse matrix algorithms
+handle this, but computation time grows roughly linearly with the number
+of SVC fields.
+
+## Comparison with MCMC
+
+The table below compares INLAocc’s EM-INLA approach with the Polya-Gamma
+MCMC sampler used by spOccupancy:
+
+| Aspect | INLAocc (EM-INLA) | spOccupancy (MCMC) |
+|----|----|----|
+| Algorithm | EM + Gibbs correction | Polya-Gamma MCMC |
+| Deterministic | Yes (same answer every run) | No (stochastic samples) |
+| Convergence diagnostics | Not needed | Required (Rhat, ESS, traceplots) |
+| Speed | 5–20x faster | Baseline |
+| Posterior quality | Gaussian approximation + correction | Exact (given convergence) |
+| Burn-in / thinning | None | Required |
+| Parallel chains | Not needed | Recommended (3+ chains) |
+| Custom derived quantities | Via INLA posterior samples | Direct from MCMC samples |
+| Spatial approximation | SPDE (continuous mesh) | NNGP (nearest-neighbor GP) |
+
+**When the INLA approximation is less reliable:**
+
+- **Very small datasets** (\\N \< 50\\) with many parameters. The
+  Gaussian approximation may be poor when the posterior is constrained
+  by very little data.
+- **Highly non-Gaussian posteriors** (multimodal, heavy-tailed). INLA
+  assumes the posterior of hyperparameters is approximately Gaussian
+  near the mode. If the posterior is multimodal or strongly skewed, this
+  can miss important structure.
+- **Weakly identified models** where the posterior is far from Gaussian.
+  This can happen when detection is very low (\\p \< 0.05\\) and the
+  data cannot distinguish between “absent” and “present but never
+  detected.”
+- **Complex random effect structures with few groups.** A random
+  intercept with only 3–4 levels is poorly estimated by any method, but
+  INLA’s approximation is particularly sensitive because it relies on
+  the Gaussian assumption for the random effects distribution.
+
+In these cases, MCMC (via spOccupancy or similar) remains the gold
+standard. For the majority of applied occupancy analyses — moderate
+sample sizes, decent detection rates, standard model structures — the
+EM-INLA approach produces indistinguishable results at a fraction of the
+computational cost.
+
+In practice, INLA is the better choice when you need results in minutes
+rather than hours: exploratory analysis, screening many candidate model
+structures, or working with large datasets where MCMC would take days.
+It is also preferable when you need deterministic reproducibility (the
+same input always gives the same output, which simplifies debugging and
+reporting) or when you are comparing many models via WAIC, since WAIC
+computation comes for free from the INLA fit. MCMC is the better choice
+when you need the full joint posterior distribution for custom derived
+quantities. For example, computing the probability that species A and B
+co-occur at a new site requires sampling from the joint posterior of
+both species’ occupancy parameters and evaluating their correlation.
+INLA gives marginal posteriors, not the joint, so this kind of derived
+quantity requires additional work. MCMC is also preferable when you need
+posterior predictive p-values that fully account for parameter
+uncertainty, or when the posterior is expected to be non-Gaussian
+(multimodal, heavy-tailed, or strongly skewed).
+
+For most applied ecology workflows, the choice is clear before you fit
+anything. If your analysis plan involves reporting coefficient
+estimates, occupancy maps, and model comparison tables, INLA gives
+equivalent results faster. If your analysis plan involves custom derived
+quantities from the joint posterior, or if you have strong reasons to
+expect a non-Gaussian posterior (very small sample size, near-boundary
+estimates, complex hierarchical structure with few groups), start with
+MCMC. You rarely need to try both approaches on the same dataset to
+decide.
+
+## Numerical stability
+
+Several numerical edge cases arise in occupancy EM and are handled
+internally:
+
+**Log-sum-exp in E-step weights.** The E-step computes a ratio of
+products \\\prod_j (1 - \hat{p}\_{ij})\\, which can underflow to zero
+when \\J\\ is large or detection is high. INLAocc works on the log scale
+throughout the E-step computation, using the log-sum-exp trick to
+compute the weight ratio without over- or underflow:
+
+\\\log w_i = \log \hat{\psi}\_i + \sum_j \log(1 - \hat{p}\_{ij}) -
+\log\left\[\exp(\log \hat{\psi}\_i + \sum_j \log(1 - \hat{p}\_{ij})) +
+\exp(\log(1 - \hat{\psi}\_i))\right\]\\
+
+**Extreme weights.** Weights very close to 0 or 1 can cause numerical
+issues in the M-step (e.g., zero-weight rows in GLM, or effective sample
+sizes near zero). INLAocc clamps weights to \\\[\epsilon, 1 -
+\epsilon\]\\ with \\\epsilon = 10^{-6}\\ for undetected sites. Detected
+sites always retain \\w_i = 1\\ exactly.
+
+**Near-complete separation.** When a covariate perfectly separates
+detected from undetected sites, the occupancy or detection regression
+can produce extreme coefficient estimates (\|\\\beta\\\| \> 10). INLA’s
+default priors provide mild regularization that prevents complete
+divergence, but the EM can oscillate if the separation is near-complete.
+Adaptive damping (Section 5) handles most such cases. For persistent
+issues, users can add a small random effect to regularize the model.
+
+**Binomial encoding precision.** The binomial encoding uses \\M = 1000\\
+pseudo-trials. For weights very close to 0 or 1,
+`round(w_i \times 1000)` maps to 0 or 1000 exactly, preserving the
+boundary behavior. For intermediate weights, the quantization error is
+at most \\1/(2 \times 1000) = 0.0005\\, which is below the default
+convergence tolerance.
+
+## Tuning parameters
+
+The [`occu()`](https://gillescolling.com/INLAocc/reference/occu.md)
+function exposes several tuning parameters:
+
+``` r
+
+fit <- occu(~ elevation + forest, ~ time + wind, data = mydata,
+            tol = 1e-4,         # convergence tolerance
+            max_iter = 100,     # maximum EM iterations
+            n.samples = 500,    # posterior samples for diagnostics
+            gibbs.iter = NULL,  # Gibbs correction draws (NULL = adaptive)
+            verbose = 0)        # 0 = silent, 1 = progress, 2 = debug
+```
+
+**When to adjust:**
+
+- **`tol`**: Decrease to `1e-5` for publication-quality results where
+  small differences in coefficient estimates matter. Increase to `1e-3`
+  for exploratory analysis or model selection where speed matters more
+  than the last decimal place.
+- **`max_iter`**: Increase beyond 100 if the model does not converge.
+  This is rare for non-spatial models but can happen for spatial models
+  with complex covariate structures or when the SPDE mesh is very fine.
+- **`gibbs.iter`**: Override the adaptive formula. Use more draws
+  (e.g., 30) for small \\N\\ or low detection rates where the
+  attenuation correction is critical. Use fewer (e.g., 5) when speed
+  matters and the correction is expected to be small.
+- **`n.samples`**: Controls the number of posterior samples generated
+  for WAIC computation and the `$samples` accessor. More samples give
+  smoother posterior summaries but take longer to generate.
+- **`verbose = 2`**: Prints per-iteration diagnostics including
+  \\\max\|\Delta \psi\|\\, \\\max\|\Delta p\|\\, the current damping
+  factor, and whether detection was frozen. Useful for diagnosing slow
+  convergence or oscillation.
+
+## Accessing convergence history
+
+Every fitted model stores its convergence trajectory:
+
+``` r
+
+fit <- occu(~ elevation, ~ time, data = mydata, verbose = 0)
+
+fit$converged
+fit$n_iter
+fit$history
+```
+
+Plotting the convergence trajectory is useful for verifying that the
+algorithm settled cleanly:
+
+``` r
+
+deltas <- sapply(fit$history, function(h) h$delta_psi)
+plot(deltas, type = "l", ylab = "max |delta psi|", xlab = "Iteration",
+     log = "y", main = "EM convergence")
+abline(h = 1e-4, lty = 2, col = "red")
+```
+
+A well-behaved convergence trajectory shows monotonic decrease (possibly
+with minor bumps when damping adjusts). Warning signs include:
+
+- **Oscillation**: \\\max\|\Delta\psi\|\\ bouncing up and down. This
+  suggests insufficient damping. Try increasing `tol` or check for
+  near-complete separation in the data.
+- **Plateau**: \\\max\|\Delta\psi\|\\ flattening well above `tol`. This
+  may indicate the model is near a saddle point or that the tolerance is
+  too aggressive for the available data.
+- **Slow linear decrease** (on log scale): Normal for spatial models.
+  The spatial prior regularizes aggressively, and the algorithm needs
+  many small steps to settle.
+
+## Summary
+
+The EM-INLA algorithm decomposes the occupancy likelihood into tractable
+pieces: the E-step imputes the latent occupancy state, and the M-step
+fits standard regressions that INLA (or GLM) handles efficiently.
+Adaptive damping and detection freezing accelerate convergence. Gibbs
+data augmentation corrects the coefficient attenuation inherent in
+soft-weight EM. The result is a deterministic, fast, and accurate
+approximation to the full Bayesian posterior that requires no
+convergence diagnostics and produces identical results on every run.

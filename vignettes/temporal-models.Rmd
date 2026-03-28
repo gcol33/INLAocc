@@ -91,6 +91,31 @@ Three features of this formulation are worth highlighting:
   estimated from that period's data, so changing survey protocols across years
   are handled naturally.
 
+What does $\rho = 0.7$ mean in ecological terms? It means that if occupancy is
+above average this year, about 70% of that excess carries over to the next year.
+A site network where most occupied sites remain occupied and most empty sites
+remain empty produces high $\rho$. This is typical for species with strong site
+fidelity or slow population dynamics --- think territorial birds, long-lived
+amphibians, or perennial plants. A low $\rho$ (say 0.2) indicates that knowing
+this year's occupancy tells you little about next year: the species may be
+nomadic, or local populations may be driven by stochastic events like flooding or
+fire.
+
+The innovation standard deviation $\sigma_\eta$ captures the magnitude of
+year-to-year environmental stochasticity after accounting for temporal
+persistence. A large $\sigma_\eta$ with high $\rho$ means the system has strong
+shocks that then persist (a bad year stays bad for several years). A large
+$\sigma_\eta$ with low $\rho$ means large but transient fluctuations. The
+classical colonization-extinction parameterization (MacKenzie et al. 2003) models
+the same persistence through explicit transition probabilities: colonization
+$\gamma$ and extinction $\epsilon$. Both formulations capture temporal
+dependence, but the AR(1) is more parsimonious when colonization and extinction
+rates are not themselves the inferential target. If you need to estimate how
+quickly empty sites are recolonized, the dynamic parameterization is more
+natural. If you need to estimate occupancy trends and their drivers, the AR(1) is
+typically sufficient and avoids identifiability issues that arise when both
+$\gamma$ and $\epsilon$ interact with covariates.
+
 
 ## Data structure
 
@@ -137,6 +162,18 @@ Missing visits (`NA` in the detection array) are handled automatically. Entire
 missing periods for a site (all visits `NA`) effectively remove that
 site-period combination from the likelihood.
 
+Common temporal data collection designs map onto this structure in different
+ways. Annual surveys (e.g., breeding bird surveys repeated yearly) produce one
+period per year, with visits as replicate surveys within each breeding season.
+Seasonal surveys (spring and autumn counts within each year) can be treated as
+separate periods if occupancy is expected to change between seasons, or as
+additional visits within a single period if the species' presence is assumed
+stable within a year. Before-after-control-impact (BACI) designs fit naturally
+into the 3D array, with a period index that spans the pre- and
+post-intervention years. The key question is whether the species' true occupancy
+state can change between two time points: if yes, they should be separate
+periods; if no, they are replicate visits within the same period.
+
 
 ## Simulating temporal data
 
@@ -177,7 +214,7 @@ Pass `temporal = "ar1"` to `occu()` to fit a multi-season model. The function
 detects the 3D array and sets up the stacked likelihood with the AR(1) temporal
 random effect automatically:
 
-```{r fit}
+```{r fit, eval = FALSE}
 fit <- occu(~ occ_x1, ~ det_x1, data = sim$data, temporal = "ar1", verbose = 0)
 summary(fit)
 ```
@@ -201,13 +238,33 @@ is new:
 - **Occupancy varies across periods.** The temporal random effect creates
   meaningful variation in landscape-level occupancy across years.
 
+The estimated $\rho$ has direct management implications. A high value (above 0.6)
+means occupancy patterns are predictable: sites that are occupied this year are
+likely occupied next year, and population monitoring can rely on less frequent
+surveys because the system changes slowly. Conservation planning can target
+currently occupied sites with reasonable confidence that they will remain
+occupied in the near term. A low $\rho$ (below 0.3) signals high environmental
+stochasticity --- the species' distribution reshuffles substantially from year to
+year, and snapshot surveys from a single year may not represent the long-term
+pattern. In this regime, protecting a fixed set of sites is less effective than
+maintaining landscape connectivity so the species can track shifting conditions.
+
+The range of period-specific occupancy estimates (the minimum and maximum across
+years) gives a sense of overall population dynamics. If occupancy ranges from
+0.3 to 0.7 across five years, the species undergoes large swings that may
+reflect boom-bust dynamics, cyclic prey availability, or irregular disturbance
+events. A narrow range (0.45 to 0.55) suggests a stable population with the
+AR(1) absorbing only minor fluctuations. Compare these estimates against any
+known events in the study area --- a sharp drop in a particular year may
+coincide with a drought, a harsh winter, or a habitat disturbance.
+
 
 ### Extracting temporal correlation
 
 The `temporalCorr()` function extracts the AR(1) parameters with full posterior
 summaries:
 
-```{r temporal-corr}
+```{r temporal-corr, eval = FALSE}
 temporalCorr(fit)
 ```
 
@@ -223,7 +280,7 @@ after fitting the AR(1). If the model captures the temporal structure
 adequately, residuals should show no remaining autocorrelation (DW statistic
 near 2):
 
-```{r durbin-watson}
+```{r durbin-watson, eval = FALSE}
 durbinWatson(fit)
 ```
 
@@ -236,9 +293,20 @@ indicate remaining positive autocorrelation, suggesting that the AR(1) model is
 insufficient. In that case, consider adding a linear time trend as a fixed
 effect alongside the AR(1), or investigate whether a specific year is an outlier.
 
+Residual temporal autocorrelation means the model's temporal structure is not
+flexible enough. Several ecological scenarios produce this. Regime shifts ---
+where the system flips between two stable states (e.g., forested vs. open) ---
+create autocorrelation patterns that an AR(1) cannot capture because the process
+is non-stationary. Non-stationary trends (accelerating decline, exponential
+growth during invasion) also leave residual autocorrelation because the AR(1)
+assumes constant $\rho$ and $\sigma$. Seasonal cycles within a year (if periods
+are months rather than years) produce periodic autocorrelation at the seasonal
+lag. In these cases, adding a fixed time trend, a second-order AR term, or
+restructuring the period definition may be needed.
+
 The general diagnostic suite also works with temporal models:
 
-```{r check-model}
+```{r check-model, eval = FALSE}
 checkModel(fit)
 ```
 
@@ -248,7 +316,7 @@ checkModel(fit)
 The `plot()` method for temporal models shows occupancy trajectories across
 periods:
 
-```{r plot-trajectory}
+```{r plot-trajectory, eval = FALSE}
 plot(fit)
 ```
 
@@ -258,7 +326,7 @@ estimated occupancy probability.
 
 To extract period-specific occupancy estimates programmatically:
 
-```{r fitted-psi}
+```{r fitted-psi, eval = FALSE}
 psi_by_period <- fitted(fit)$psi  # N x T matrix
 colMeans(psi_by_period)
 ```
@@ -267,9 +335,22 @@ These values represent the average estimated occupancy across all sites for each
 period. The trajectory should show variation across years, consistent with
 the temporal random effects estimated for each period.
 
+When reading temporal trajectories, look for three broad patterns. A monotonic
+decline (occupancy dropping steadily across periods) suggests ongoing habitat
+loss or increasing pressure from an invasive competitor; this pattern often
+warrants adding a linear time trend as a fixed effect to separate the
+directional signal from stochastic fluctuation. Cyclical variation (occupancy
+oscillating with a regular period) may reflect predator-prey dynamics,
+resource pulses, or climatic oscillations like ENSO. Step changes --- a sudden
+drop or jump between two consecutive periods --- often coincide with discrete
+management interventions (e.g., habitat restoration, species reintroduction) or
+catastrophic events (wildfire, flooding). Overlaying known events on the
+temporal trajectory plot helps distinguish real ecological signals from sampling
+noise.
+
 You can also compute site-specific trajectories:
 
-```{r site-trajectories}
+```{r site-trajectories, eval = FALSE}
 # Occupancy trajectory for site 1
 psi_by_period[1, ]
 
@@ -294,7 +375,7 @@ Predictions are period-specific: the temporal random effect shifts all predictio
 To predict at a specific period only (e.g., the most recent year):
 
 ```{r predict-period, eval = FALSE}
-predict(fit, X.0 = new_sites, type = "occupancy", period = 5)
+predict(fit, period = 5)
 ```
 
 
@@ -409,6 +490,16 @@ AR(1) estimation. With only 2 seasons, $\rho$ is very weakly identified because
 there is only one transition to inform the autocorrelation. Five or more seasons
 produce substantially tighter credible intervals on the temporal parameters.
 
+**Study design considerations.** For trend estimation, the number of periods
+matters more than the number of visits per period, up to a point. Five periods
+with 3 visits each gives a reasonable AR(1) estimate; 10 or more periods are
+needed for nonlinear trends or for detecting changes in $\rho$ over time. Within
+each period, the timing of visits affects detection parameters --- surveys
+conducted early and late in a season may yield different detection probabilities
+if the species' activity varies seasonally. If visit timing is inconsistent
+across years, include Julian date as a detection covariate to absorb this
+variation rather than letting it leak into the occupancy estimates.
+
 **When to use the static model instead.** If $\rho$ is estimated near zero and
 the temporal model does not improve WAIC over the static model, use the static
 model. It is simpler, faster, and the temporal random effects are adding noise
@@ -458,6 +549,7 @@ quickly. For large $N$ (> 500 sites) and long time series ($T$ > 10), consider:
 - Fitting spatial-only and temporal-only models first to assess which component
   matters more.
 - Using a coarser mesh for the spatial SPDE to reduce the number of mesh nodes.
+
 - Subsetting to a region of interest if the full dataset is too large.
 
 The temporal component alone (without spatial) is fast even for large $N$,

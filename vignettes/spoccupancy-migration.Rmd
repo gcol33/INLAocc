@@ -226,7 +226,9 @@ occu(~ elev + (1 | region),
 Both packages support lme4-style random effects in either formula:
 
 - `(1 | group)` --- random intercept
+
 - `(x | group)` --- correlated random intercept and slope
+
 - `(x || group)` --- uncorrelated random intercept and slope
 
 The formula parsing is otherwise identical: standard R formula syntax

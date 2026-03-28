@@ -10,6 +10,9 @@ detection history entries.
 ``` r
 # S3 method for class 'occu_inla'
 logLik(object, ...)
+
+# S3 method for class 'occu_inla_temporal'
+logLik(object, ...)
 ```
 
 ## Arguments
