@@ -8,182 +8,439 @@ vignette: >
 ---
 
 ```{r setup, include = FALSE}
+HAS_INLA <- requireNamespace("INLA", quietly = TRUE)
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>",
   fig.width = 7,
-  fig.height = 5
+  fig.height = 5,
+  eval = HAS_INLA,
+  cache = TRUE,
+  message = FALSE,
+  warning = FALSE
 )
 ```
 
-## Fitting a model
+## Introduction
 
-Simulate data and fit a single-species occupancy model:
+INLAocc fits hierarchical occupancy models using Integrated Nested Laplace
+Approximations (INLA) instead of Markov chain Monte Carlo (MCMC). The package
+provides a single entry point --- `occu()` --- that handles single-species,
+multi-species, spatial, and temporal occupancy models through a familiar
+formula interface.
 
-```{r basic, eval = FALSE}
+Occupancy modeling addresses a fundamental problem in ecology: species are
+present at some sites but may go undetected on any given survey visit. Without
+accounting for this imperfect detection, naive estimates of species occurrence
+are biased low. The occupancy model separates two processes --- the ecological
+state (is the species truly there?) and the observation process (did we detect
+it?) --- to produce unbiased estimates of both occupancy and detection
+probability.
+
+INLA replaces MCMC sampling with a deterministic approximation to the
+posterior distribution. In practice, this means no burn-in period, no thinning,
+no convergence diagnostics, and identical results every time you run the model.
+For occupancy models of moderate complexity, this translates to 5--20x
+speedups over equivalent MCMC implementations while producing posterior
+summaries that are nearly indistinguishable from long MCMC runs.
+
+This vignette walks through the core workflow: simulating data with known
+parameters, fitting a basic single-species model, checking the fit with
+diagnostics, adding random effects, comparing competing models, and making
+predictions. For spatial models with SPDE random fields, see
+`vignette("spatial-models")`. For multi-species community models, see
+`vignette("multi-species")`. For a full treatment of the diagnostic toolkit,
+see `vignette("diagnostics")`.
+
+
+## The occupancy model
+
+The standard single-species, single-season occupancy model has two levels.
+
+**Ecological process (true state).** Each site $i = 1, \dots, N$ has a latent
+occupancy state $z_i \in \{0, 1\}$ drawn from a Bernoulli distribution:
+
+$$z_i \sim \text{Bernoulli}(\psi_i), \quad \text{logit}(\psi_i) = \mathbf{x}_i^\top \boldsymbol{\beta}$$
+
+where $\psi_i$ is the occupancy probability at site $i$ and
+$\mathbf{x}_i$ is a vector of site-level covariates (e.g., elevation, forest
+cover) with regression coefficients $\boldsymbol{\beta}$.
+
+**Observation process (detection).** At each site $i$, we conduct $J$ repeat
+visits. The observed detection/non-detection $y_{ij}$ on visit $j$ depends on
+both the true state and a detection probability $p_{ij}$:
+
+$$y_{ij} \mid z_i \sim \text{Bernoulli}(z_i \cdot p_{ij}), \quad \text{logit}(p_{ij}) = \mathbf{w}_{ij}^\top \boldsymbol{\alpha}$$
+
+where $\mathbf{w}_{ij}$ is a vector of visit-level covariates (e.g., survey
+effort, weather) with coefficients $\boldsymbol{\alpha}$.
+
+The key constraint is that when $z_i = 0$ (species absent), detection is
+impossible: $y_{ij} = 0$ for all visits $j$, regardless of $p_{ij}$. When
+$z_i = 1$ (species present), each visit is an independent Bernoulli trial with
+success probability $p_{ij}$. A site where the species was never detected
+across all visits could be either truly unoccupied or occupied but missed every
+time --- the model uses the repeated visits to disentangle these two
+explanations.
+
+The full likelihood marginalizes over the latent $z_i$, producing a finite
+mixture that standard INLA cannot fit directly. INLAocc handles this with an
+EM algorithm: the E-step computes the posterior probability
+$P(z_i = 1 \mid \mathbf{y}_i)$ for each site, and the M-step refits the
+occupancy and detection sub-models via INLA using these posterior weights.
+After convergence, a short Gibbs data augmentation phase corrects for the
+coefficient attenuation inherent in the EM point-mass approximation, yielding
+properly calibrated posterior summaries.
+
+
+## Simulating data
+
+We start by simulating occupancy data with known parameters so we can verify
+that the model recovers them. The `simulate_occu()` function generates sites,
+visits, covariates, and detection histories from the model described above.
+
+```{r simulate}
 library(INLAocc)
 
-sim <- simulate_occu(N = 200, J = 4, seed = 42)
-fit <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data)
-summary(fit)
+sim <- simulate_occu(
+  N = 200, J = 4,
+  beta_occ = c(0.5, -0.8, 0.8),
+  beta_det = c(0, -0.5),
+  seed = 42
+)
 ```
 
-First formula is occupancy, second is detection. If you omit the detection
-formula, it defaults to `~ 1` with a warning.
+This creates 200 sites with 4 visits each. The occupancy linear predictor has
+an intercept of 0.5 and two covariate effects ($-0.8$ and $0.8$). The detection
+linear predictor has an intercept of 0 (corresponding to detection probability
+0.5 on the logit scale) and one covariate effect ($-0.5$). The function returns
+a list with the formatted data (`sim$data`, an `occu_data` object) and the
+true parameter values (`sim$truth`).
 
-## Exploring the data first
+We can inspect the data with `summary()`:
 
-Before fitting, check what you're working with:
-
-```{r explore, eval = FALSE}
+```{r summary-data}
 summary(sim$data)
+```
+
+The naive occupancy rate (proportion of sites where the species was detected at
+least once) is a lower bound on the true occupancy rate --- some occupied sites
+had the species go undetected across all four visits. A central goal of the
+model is to estimate how many of those "all-zero" sites are actually occupied.
+
+The `plot()` method for `occu_data` objects produces a panel of histograms
+showing the distribution of covariates and the per-site detection frequency:
+
+```{r plot-data, fig.height = 4}
 plot(sim$data)
 ```
 
-`summary()` gives detection frequencies, naive occupancy and detection rates,
-visit completeness, and per-visit detection rates. `plot()` produces a panel
-with histograms and (if coordinates exist) a spatial detection map.
+
+## Fitting the basic model
+
+The `occu()` function takes two formulas: the first specifies occupancy
+covariates (right-hand side only), and the second specifies detection
+covariates. Intercepts are included automatically in both.
+
+```{r fit-basic}
+fit <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data, verbose = 0)
+```
+
+The `summary()` method prints the full posterior summary:
+
+```{r summary-fit}
+summary(fit)
+```
+
+**Interpreting the output.** The true occupancy coefficients were
+$\boldsymbol{\beta} = (0.5, -0.8, 0.8)$ and the true detection coefficients
+were $\boldsymbol{\alpha} = (0, -0.5)$. Compare the posterior means to these
+true values --- they should be close, and all 95% credible intervals should
+contain the generating values.
+
+The estimated mean occupancy probability is higher than the naive
+detection rate, as expected. Accounting for imperfect detection reveals
+sites that were occupied but the species went undetected across all four
+visits.
+
+Because INLA is deterministic, re-running this code produces identical
+results --- there is no Monte Carlo variability to worry about.
+
+
+## Checking the fit
+
+Model checking is not optional. A model that converges is not necessarily a
+model that fits the data well. INLAocc provides simulation-based diagnostics
+through the `checkModel()` function and targeted hypothesis tests through
+`testUniformity()` and `testDispersion()`.
+
+### Full diagnostic panel
+
+The `checkModel()` function generates posterior predictive simulations and
+produces a four-panel diagnostic plot:
+
+```{r check-model, fig.height = 6}
+checkModel(fit)
+```
+
+The four panels are:
+
+1. **QQ plot of PIT residuals.** Probability integral transform (PIT) residuals
+   should follow a uniform distribution if the model is correctly specified.
+   On the QQ plot, this means the points should fall along the diagonal.
+   Systematic departures indicate model misspecification --- an S-shaped curve
+   suggests overdispersion, while a step pattern suggests zero-inflation.
+
+2. **Residuals vs. fitted values.** The scaled residuals plotted against
+   predicted detection rates should show no systematic trend. A funnel shape
+   or curvature indicates that the variance structure or the functional form
+   of the linear predictor is wrong.
+
+3. **Dispersion test.** The observed residual variance is compared against the
+   distribution of variances from simulated data sets generated under the
+   fitted model. The observed value (red line) should fall within the
+   simulated distribution. A dispersion ratio near 1.0 is ideal.
+
+4. **Outlier test.** Extreme residuals are compared against their expected
+   frequency under the model. An excess of outliers suggests that some sites
+   behave very differently from the model's predictions.
+
+### Formal hypothesis tests
+
+For a quantitative assessment, use the individual test functions:
+
+```{r test-uniformity}
+testUniformity(fit)
+```
+
+A non-significant p-value means we cannot reject the hypothesis that the PIT
+residuals are uniformly distributed --- no evidence of systematic
+misspecification.
+
+```{r test-dispersion}
+testDispersion(fit)
+```
+
+A dispersion ratio close to 1 confirms that the model's assumed variance
+matches the observed variance. Ratios substantially above 1 indicate
+overdispersion; ratios below 1 indicate underdispersion.
+
+### Posterior predictive check
+
+For a Bayesian goodness-of-fit assessment, `ppcOccu()` compares a summary
+statistic computed on the observed data to the same statistic computed on data
+simulated from the posterior:
+
+```{r ppc}
+ppc <- ppcOccu(fit, fit.stat = "freeman-tukey", group = 1)
+ppc$bayesian.p
+```
+
+A Bayesian p-value near 0.5 means the model generates data whose summary
+statistics are centred on the observed values. Values near 0 or 1 signal
+systematic misfit. The `group = 1` argument aggregates by site; `group = 2`
+aggregates by visit.
+
+
+## Comparing true vs. estimated parameters
+
+When working with simulated data, the most direct validation is to compare the
+estimated coefficients against the known truth. This parameter recovery step
+builds confidence that the model and its fitting algorithm are working
+correctly.
+
+```{r recovery}
+truth <- data.frame(
+  parameter = c("beta_occ[1]", "beta_occ[2]", "beta_occ[3]",
+                "beta_det[1]", "beta_det[2]"),
+  true      = c(0.5, -0.8, 0.8, 0, -0.5),
+  estimated = c(coef(fit, "occupancy"), coef(fit, "detection"))
+)
+truth
+```
+
+The Gibbs data augmentation correction that runs after the EM algorithm is
+responsible for this close recovery --- without it, the EM approximation alone
+would attenuate the coefficients toward zero.
+
 
 ## Random effects
 
-Random intercepts and slopes go directly in the formula:
+When data are grouped --- sites nested within regions, surveys conducted by
+different observers, or species within communities --- random effects capture
+the between-group variation that fixed effects cannot. In occupancy models,
+random effects are common on both the occupancy and detection sides.
 
-```{r re, eval = FALSE}
+The mathematical extension adds a group-level random intercept to the linear
+predictor:
+
+$$\text{logit}(\psi_i) = \mathbf{x}_i^\top \boldsymbol{\beta} + u_{g[i]}, \quad u_g \sim \mathcal{N}(0, \sigma^2_u)$$
+
+where $g[i]$ maps site $i$ to its group and $\sigma^2_u$ controls how much
+groups differ after accounting for the fixed-effect covariates.
+
+INLAocc uses standard mixed-model formula syntax. To add a random intercept
+for region:
+
+```{r fit-re}
+# Add a grouping variable to the data
 sim$data$occ.covs$region <- sample(1:5, 200, replace = TRUE)
 
-fit_re <- occu(
-  ~ occ_x1 + (1 | region),
-  ~ det_x1,
-  data = sim$data
-)
-ranef(fit_re)
+fit_re <- occu(~ occ_x1 + occ_x2 + (1 | region), ~ det_x1,
+               data = sim$data, verbose = 0)
+summary(fit_re)
 ```
 
-Also supported: `(x | group)` for random slopes, `(x || group)` for
-uncorrelated slopes, and `(1 | a/b)` for nested grouping.
+INLA parameterizes random effects in terms of precision (the inverse of
+variance). High precision means low between-group variation --- the groups do
+not differ substantially after accounting for the covariates. This is expected
+here, since we simulated the data without any grouping structure.
 
-## Spatial models
+The supported random effect syntaxes are:
 
-Pass coordinates to add an SPDE spatial random effect:
+- `(1 | group)` --- random intercept per level of `group`
+- `(x | group)` --- correlated random intercept and slope for covariate `x`
+- `(x || group)` --- uncorrelated random intercept and slope
+- `(1 | a/b)` --- nested random effects (random intercept for `b` within `a`)
 
-```{r spatial, eval = FALSE}
-sim_sp <- simulate_occu(N = 200, J = 4, spatial_range = 0.2, seed = 123)
+Random effects work on both the occupancy and detection sides of the model.
+For example, `occu(~ elev + (1 | region), ~ (1 | observer), data = dat)`
+includes a random intercept for region in occupancy and a random intercept for
+observer in detection.
 
-fit_sp <- occu(~ occ_x1, ~ det_x1, data = sim_sp$data,
-               spatial = sim_sp$data$coords)
-summary(fit_sp)
+
+## Model comparison
+
+Selecting among competing model structures is a standard step in any analysis.
+INLAocc supports comparison via WAIC (Watanabe-Akaike Information Criterion),
+AIC, and BIC. WAIC is the natural choice for Bayesian models fitted with INLA,
+as it uses the full posterior predictive distribution rather than a point
+estimate.
+
+```{r compare}
+m1 <- occu(~ 1, ~ 1, data = sim$data, verbose = 0)
+m2 <- occu(~ occ_x1, ~ det_x1, data = sim$data, verbose = 0)
+m3 <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data, verbose = 0)
+
+compare_models(null = m1, simple = m2, full = m3, criterion = "waic")
 ```
 
-The mesh is auto-scaled from the coordinate extent. To control resolution
-(units match your CRS, so metres for UTM):
+The table ranks models by WAIC (lower is better). The `delta` column gives the
+WAIC difference from the best model, and `weight` gives the Akaike-style model
+weight. The full model carrying both covariates should be strongly preferred,
+confirming that both `occ_x1` and `occ_x2` contribute meaningful information
+about occupancy.
 
-```{r mesh, eval = FALSE}
-fit_sp <- occu(~ occ_x1, ~ det_x1, data = sim_sp$data,
-               spatial = sim_sp$data$coords,
-               spde.args = list(max.edge = c(5000, 15000)))
+For situations where no single model is clearly dominant, `modelAverage()`
+computes WAIC-weighted averages of predictions across models:
+
+```{r model-average}
+avg <- modelAverage(null = m1, simple = m2, full = m3, criterion = "waic")
+head(avg$psi_hat)  # weighted-average occupancy probabilities
 ```
 
-After fitting, extract the estimated spatial range:
+Model averaging is particularly useful when several models have similar WAIC
+values and you want predictions that account for model uncertainty rather than
+conditioning on a single "best" structure.
 
-```{r range, eval = FALSE}
-spatialRange(fit_sp)
+### K-fold cross-validation
+
+For out-of-sample validation, pass `k.fold` during fitting:
+
+```{r kfold, eval = FALSE}
+fit_cv <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data,
+               k.fold = 5, verbose = 0)
+fit_cv$k.fold
 ```
 
-This returns the posterior mean, SD, and 95% credible interval for the SPDE
-range parameter, in the same units as your coordinates.
+This holds out 1/5 of sites at a time, refits on the rest, and evaluates
+predictions on the held-out sites. K-fold is slower than WAIC (the model is
+refit $k$ times) but gives a direct estimate of out-of-sample predictive
+performance.
 
-## Diagnostics
-
-`checkModel()` produces a diagnostic panel in one call:
-
-```{r check, eval = FALSE}
-checkModel(fit_sp)
-```
-
-Four panels: QQ plot of PIT residuals against Uniform(0,1), residuals vs
-fitted, dispersion histogram, and a Moran's I correlogram (when coordinates
-are available).
-
-Each test is also available on its own:
-
-```{r diag, eval = FALSE}
-testUniformity(fit)     # KS test on PIT residuals
-testDispersion(fit)     # over/underdispersion
-testOutliers(fit)       # simulation envelope
-testZeroInflation(fit)  # excess unoccupied sites
-moranI(fit_sp)          # spatial autocorrelation in residuals
-variogram(fit_sp)       # empirical semivariogram
-```
-
-All return `htest` objects with `$p.value`.
-
-If you have DHARMa installed:
-
-```{r dharma, eval = FALSE}
-res <- dharma(fit)
-plot(res)
-```
-
-## Model comparison and averaging
-
-```{r compare, eval = FALSE}
-m1 <- occu(~ 1, ~ 1, data = sim$data)
-m2 <- occu(~ occ_x1, ~ det_x1, data = sim$data)
-m3 <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data)
-
-compare_models(null = m1, elev = m2, full = m3, criterion = "aic")
-```
-
-This returns AIC (or BIC/WAIC), delta, and model weights.
-
-For model-averaged predictions:
-
-```{r avg, eval = FALSE}
-avg <- modelAverage(null = m1, elev = m2, full = m3, criterion = "aic")
-avg$psi_hat   # weighted-average occupancy
-avg$psi_se    # unconditional SEs (Burnham & Anderson eq. 4.9)
-```
 
 ## Prediction
 
-```{r predict, eval = FALSE}
-# Vary one covariate over a grid, hold others at their mean
+### Marginal effects
+
+To understand how a single covariate influences occupancy (or detection) while
+holding other covariates at their means, use `marginal_effect()`:
+
+```{r marginal-effect, fig.height = 4}
+me <- marginal_effect(fit, "occ_x1")
+plot(me)
+```
+
+This varies `occ_x1` across its observed range, fixes all other covariates at
+their sample means, and computes predicted occupancy probabilities with 95%
+credible intervals. The `plot()` method produces a ribbon plot with the
+posterior mean and credible band. Because `occ_x1` has a negative coefficient,
+the plot shows occupancy declining from left to right.
+
+### Prediction at new covariate values
+
+For predictions at specific covariate combinations, use `predict()` with a
+data frame of new values:
+
+```{r predict-new}
+new_sites <- data.frame(occ_x1 = c(-1, 0, 1), occ_x2 = c(0, 0, 0))
+predict(fit, X.0 = new_sites, type = "occupancy")
+```
+
+The predicted occupancy decreases as `occ_x1` increases, reflecting the
+negative effect of this covariate. All predictions are on the probability
+scale (inverse-logit of the linear predictor), with quantile-based credible
+intervals.
+
+The `terms` argument offers a more concise syntax for marginal prediction
+grids, similar to `ggeffects::ggpredict()`:
+
+```{r predict-terms}
 predict(fit, terms = "occ_x1 [-2:2 by=0.5]")
-
-# Design-matrix prediction at new sites
-predict(fit, X.0 = data.frame(occ_x1 = 0, occ_x2 = 1))
-
-# Marginal effect curve
-marginal_effect(fit, "occ_x1")
 ```
 
-## Multi-species models
-
-```{r ms, eval = FALSE}
-sim_ms <- simMsOcc(N = 100, J = 3, n_species = 10, seed = 200)
-
-fit_ms <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data, multispecies = TRUE)
-summary(fit_ms)
-richness(fit_ms)
-```
-
-## Multi-season models
-
-```{r temporal, eval = FALSE}
-sim_t <- simTOcc(N = 50, J = 3, n_seasons = 5, seed = 300)
-
-fit_t <- occu(~ 1, ~ 1, data = sim_t$data, temporal = "ar1")
-summary(fit_t)
-temporalCorr(fit_t)
-```
 
 ## S3 methods
 
-```{r s3, eval = FALSE}
-coef(fit)               # posterior means
-confint(fit)            # credible intervals
-tidy(fit)               # broom-compatible data.frame
-glance(fit)             # one-row model summary
-AIC(fit); BIC(fit)      # information criteria
-update(fit, ~ . - occ_x2)  # refit without occ_x2
-```
+Fitted `occu_inla` objects support the standard R model interface, making them
+interoperable with tools you already know:
+
+| Method | Description |
+|:-------|:------------|
+| `summary(fit)` | Full posterior summary with model fit statistics |
+| `coef(fit)` | Posterior means of fixed effects |
+| `confint(fit)` | Credible intervals for fixed effects |
+| `fitted(fit)` | Fitted occupancy and detection probabilities |
+| `residuals(fit)` | Residuals (Pearson or PIT) |
+| `predict(fit, X.0 = ...)` | Prediction at new covariate values |
+| `plot(fit)` | Four-panel diagnostic plot (EM trace, psi, p, z vs. naive) |
+| `logLik(fit)` | Marginal log-likelihood |
+| `nobs(fit)` | Number of sites |
+| `vcov(fit)` | Posterior variance-covariance matrix |
+| `simulate(fit)` | Simulate new detection histories from the fitted model |
+| `update(fit, ~ . - occ_x2)` | Refit with a modified formula |
+| `tidy(fit)` / `glance(fit)` | Tidy summaries (broom-compatible) |
+| `ranef(fit)` | Extract random effect posteriors |
+
+
+## What's next
+
+This vignette covered the core single-species workflow. INLAocc supports
+substantially more complex models through the same `occu()` interface:
+
+- **Spatial models.** When sites are spatially correlated, add an SPDE random
+  field by passing coordinates to the `spatial` argument. See
+  `vignette("spatial-models")` for the full treatment, including mesh
+  construction, spatially varying coefficients, and spatial prediction maps.
+
+- **Multi-species models.** Community occupancy models that share information
+  across species, with optional latent factor structure. See
+  `vignette("multi-species")`.
+
+- **Diagnostics deep dive.** The full suite of simulation-based diagnostics,
+  including spatial residual analysis, temporal autocorrelation tests, and
+  posterior predictive checks. See `vignette("diagnostics")`.
+
+- **Migrating from spOccupancy.** If you are switching from an MCMC-based
+  workflow, `vignette("spoccupancy-migration")` maps spOccupancy's function
+  names, data formats, and output structures to their INLAocc equivalents.

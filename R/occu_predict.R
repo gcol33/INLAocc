@@ -112,9 +112,15 @@ predict.occu_inla <- function(object, X.0 = NULL, X.p.0 = NULL,
       beta <- object$occ_fit$summary.fixed$mean
       beta_sd <- object$occ_fit$summary.fixed$sd
 
+      # Auto-add intercept column if the model has one and X.0 does not
+      has_intercept <- "(Intercept)" %in% rownames(object$occ_fit$summary.fixed)
+      if (has_intercept && ncol(X.0) == length(beta) - 1L) {
+        X.0 <- cbind(1, X.0)
+      }
+
       if (ncol(X.0) != length(beta)) {
         stop(sprintf(
-          "X.0 has %d columns but model has %d occupancy coefficients. Include intercept column.",
+          "X.0 has %d columns but model has %d occupancy coefficients (including intercept).",
           ncol(X.0), length(beta)
         ))
       }

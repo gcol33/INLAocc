@@ -26,6 +26,7 @@ run_em <- function(args, spatial = NULL) {
     max_iter    = args$max.iter,
     tol         = args$tol,
     damping     = args$damping,
+    correction  = args$correction %||% "auto",
     num.threads = args$num.threads %||% "1:1",
     verbose     = args$verbose
   )
@@ -519,13 +520,18 @@ engine_svc <- function(args) {
                 data$N, args$spatial$n_mesh, paste(svc_names, collapse = ", ")))
   }
 
-  # Add SVC spatial RE terms to formula
-  svc_re <- lapply(seq_along(svc_cols), function(k) {
-    occu_re("iid", group = paste0("svc_spatial_", k), model = "iid")
-  })
+  # Add SVC spatial RE terms: one iid RE per SVC covariate, indexed by site.
+  # The group column must exist in occ.covs before the RE machinery resolves it.
+  svc_re <- vector("list", length(svc_cols))
+  for (k in seq_along(svc_cols)) {
+    col_name <- paste0("svc_spatial_", k)
+    data$occ.covs[[col_name]] <- seq_len(data$N)
+    svc_re[[k]] <- occu_re("iid", group = col_name, model = "iid")
+  }
   occ_re_all <- c(args$occ_re, svc_re)
 
   svc_args <- args
+  svc_args$data <- data
   svc_args$occ_re <- occ_re_all
   result <- run_em(svc_args)
 
@@ -598,9 +604,16 @@ engine_ms <- function(args) {
     )
   }
 
-  # Parallel if available, sequential otherwise
+  # Parallel if available and enough species to amortize cluster startup cost.
+  # Socket clusters on Windows take ~3-5s to spawn + load INLA on each worker,
+
+  # so parallel is only faster when there are enough species per core.
   n_cores <- getOption("INLAocc.cores", 1L)
-  if (n_cores > 1 && requireNamespace("parallel", quietly = TRUE)) {
+  use_parallel <- n_cores > 1 &&
+    n_sp >= 2L * n_cores &&
+    requireNamespace("parallel", quietly = TRUE)
+
+  if (use_parallel) {
     if (args$verbose >= 1) cat(sprintf("  Using %d cores\n", min(n_cores, n_sp)))
     cl <- parallel::makeCluster(min(n_cores, n_sp),
                                     port = sample(49152:65535, 1))
@@ -767,12 +780,15 @@ engine_ms_temporal <- function(args) {
     )
   }
 
-  # Parallel if available, sequential otherwise
+  # Parallel if enough species to amortize cluster startup cost
   n_cores <- getOption("INLAocc.cores", 1L)
-  if (n_cores > 1 && requireNamespace("parallel", quietly = TRUE)) {
+  use_parallel <- n_cores > 1 &&
+    n_sp >= 2L * n_cores &&
+    requireNamespace("parallel", quietly = TRUE)
+
+  if (use_parallel) {
     if (args$verbose >= 1)
       cat(sprintf("  Using %d cores\n", min(n_cores, n_sp)))
-    # On Windows, use socket cluster
     cl <- parallel::makeCluster(min(n_cores, n_sp),
                                     port = sample(49152:65535, 1))
     on.exit(parallel::stopCluster(cl), add = TRUE)

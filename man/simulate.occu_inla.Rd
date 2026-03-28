@@ -2,9 +2,12 @@
 % Please edit documentation in R/occu_diagnostics.R
 \name{simulate.occu_inla}
 \alias{simulate.occu_inla}
+\alias{simulate.occu_inla_temporal}
 \title{Simulate replicate datasets from a fitted occupancy model}
 \usage{
 \method{simulate}{occu_inla}(object, nsim = 250L, seed = 123L, level = c("site", "obs"), ...)
+
+\method{simulate}{occu_inla_temporal}(object, nsim = 250L, seed = 123L, level = c("site", "obs"), ...)
 }
 \arguments{
 \item{object}{fitted \code{occu_inla} object}

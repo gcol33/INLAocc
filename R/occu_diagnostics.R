@@ -234,14 +234,23 @@ residuals.occu_inla_ms <- function(object,
 #' @return list of per-period fitted value lists
 #' @export
 fitted.occu_inla_temporal <- function(object, ...) {
-  results <- vector("list", object$n_periods)
-  for (t in seq_len(object$n_periods)) {
-    fit <- object$period_fits[[t]]
-    if (!is.null(fit)) {
-      results[[t]] <- fitted.occu_inla(fit, ...)
-    }
-  }
-  results
+  # Reconstruct stacked y.rep, p, psi from per-period fits
+  y_parts  <- lapply(seq_len(object$n_periods), function(t) object$data_list[[t]]$y)
+  y_full   <- do.call(cbind, y_parts)
+  psi_vec  <- if (!is.null(object$psi_mat)) rowMeans(clamp(object$psi_mat))
+              else rowMeans(do.call(cbind, lapply(object$period_fits, function(pf) clamp(pf$psi_hat))))
+  z_hat    <- compute_weights(y_full, psi_vec,
+                              do.call(cbind, lapply(object$period_fits, function(pf) clamp(pf$p_hat))))
+  p_full   <- do.call(cbind, lapply(object$period_fits, function(pf) clamp(pf$p_hat)))
+  y_rep    <- z_hat * p_full
+  y_rep[is.na(y_full)] <- NA
+
+  # Return psi as N x T matrix if available, so users can inspect per-period
+
+  psi_mat <- if (!is.null(object$psi_mat)) clamp(object$psi_mat)
+             else do.call(cbind, lapply(object$period_fits, function(pf) clamp(pf$psi_hat)))
+
+  list(y.rep = y_rep, p = p_full, psi = psi_mat, z = z_hat)
 }
 
 
@@ -256,14 +265,36 @@ residuals.occu_inla_temporal <- function(object,
                                          type = c("deviance", "pearson", "response"),
                                          ...) {
   type <- match.arg(type)
-  results <- vector("list", object$n_periods)
-  for (t in seq_len(object$n_periods)) {
-    fit <- object$period_fits[[t]]
-    if (!is.null(fit)) {
-      results[[t]] <- residuals.occu_inla(fit, type = type, ...)
-    }
+  f <- fitted(object)
+
+  y_parts <- lapply(seq_len(object$n_periods), function(t) object$data_list[[t]]$y)
+  y_full  <- do.call(cbind, y_parts)
+  detected <- rowSums(y_full == 1, na.rm = TRUE) > 0
+
+  y_exp <- f$y.rep
+  psi   <- f$psi
+
+  if (type == "response") {
+    det_resid <- y_full - y_exp
+    occ_resid <- as.integer(detected) - psi
+  } else if (type == "pearson") {
+    det_var <- y_exp * (1 - f$p)
+    det_resid <- (y_full - y_exp) / sqrt(clamp(det_var, lo = 1e-6))
+    occ_var <- psi * (1 - psi)
+    occ_resid <- (as.integer(detected) - psi) / sqrt(clamp(occ_var, lo = 1e-6))
+  } else {
+    sign_d <- sign(y_full - y_exp)
+    d2 <- -2 * (y_full * log(clamp(y_exp / clamp(y_full))) +
+                 (1 - y_full) * log(clamp((1 - y_exp) / clamp(1 - y_full))))
+    d2[is.na(d2)] <- 0
+    det_resid <- sign_d * sqrt(abs(d2))
+    sign_o <- sign(as.integer(detected) - psi)
+    o2 <- -2 * (as.integer(detected) * log(clamp(psi)) +
+                 (1 - as.integer(detected)) * log(clamp(1 - psi)))
+    occ_resid <- sign_o * sqrt(abs(o2))
   }
-  results
+
+  list(occ.resids = occ_resid, det.resids = det_resid)
 }
 
 
@@ -391,6 +422,114 @@ ppcOccu <- function(object, fit.stat = c("freeman-tukey", "chi-squared"),
 # ---------------------------------------------------------------------------
 
 #' Compute WAIC for occupancy models
+# ---------------------------------------------------------------------------
+#  Bernoulli-scale WAIC via posterior samples
+# ---------------------------------------------------------------------------
+#
+# The occupancy INLA fit uses binomial(M=1000) encoding internally, which
+# makes INLA's built-in WAIC meaningless for model comparison.  This helper
+# computes WAIC on the observation (Bernoulli) scale by:
+#   1. Drawing posterior samples of the linear predictors from both INLA fits
+#   2. Computing per-site occupancy log-likelihoods for each draw
+#   3. Aggregating via the standard WAIC formula
+#
+#' @noRd
+compute_bernoulli_waic <- function(object, n_samples = 200L) {
+  y   <- object$data$y
+  N   <- nrow(y)
+  J   <- ncol(y)
+  detected <- rowSums(y == 1, na.rm = TRUE) > 0
+  valid    <- !is.na(y)
+
+  # --- Draw posterior samples from both INLA fits ---
+  occ_samp <- tryCatch(
+    INLA::inla.posterior.sample(n_samples, object$occ_fit),
+    error = function(e) NULL
+  )
+  det_samp <- tryCatch(
+    INLA::inla.posterior.sample(n_samples, object$det_fit),
+    error = function(e) NULL
+  )
+
+  if (is.null(occ_samp) || is.null(det_samp)) {
+    # Fallback: point-estimate log-likelihood (AIC-like)
+    ll <- occu_loglik(y, clamp(object$psi_hat), clamp(object$p_hat))
+    n_par <- nrow(object$occ_fit$summary.fixed) +
+             nrow(object$det_fit$summary.fixed)
+    return(list(waic = -2 * ll + 2 * n_par, lppd = ll, p_waic = n_par,
+                ll_site = NULL))
+  }
+
+  # --- Extract occupancy probabilities (N × n_samples) ---
+  # For non-spatial: first N latent values are the site linear predictors
+
+  # For spatial weighted: 2 rows per undetected site.  The first N entries
+  # in the fitted values correspond to the original N sites in order, so
+  # taking seq_len(N) is correct for both encodings (INLA respects the
+  # order of the stacked data frame).
+  psi_mat <- matrix(NA_real_, N, n_samples)
+  for (s in seq_len(n_samples)) {
+    psi_mat[, s] <- clamp(expit(occ_samp[[s]]$latent[seq_len(N)]))
+  }
+
+  # --- Extract detection probabilities (n_obs × n_samples) ---
+  n_obs <- nrow(object$det_df)
+  p_long_mat <- matrix(NA_real_, n_obs, n_samples)
+  for (s in seq_len(n_samples)) {
+    p_long_mat[, s] <- clamp(expit(det_samp[[s]]$latent[seq_len(n_obs)]))
+  }
+
+  # Map long-format detection back to N × J × n_samples
+  det_site  <- object$det_df$site
+  det_visit <- object$det_df$visit
+
+  # --- Per-site log-likelihoods (N × n_samples) ---
+  ll_matrix <- matrix(0, N, n_samples)
+
+  for (i in seq_len(N)) {
+    vi <- which(valid[i, ])
+    if (length(vi) == 0L) next
+
+    # Rows in det_df that belong to site i
+    rows_i <- which(det_site == i)
+    # visits_i <- det_visit[rows_i]  # matched visit indices
+    y_i <- y[i, vi]
+
+    if (detected[i]) {
+      # log(psi) + sum_j [ y_ij log(p_ij) + (1-y_ij) log(1-p_ij) ]
+      for (s in seq_len(n_samples)) {
+        p_i <- p_long_mat[rows_i, s]
+        ll_matrix[i, s] <- log(psi_mat[i, s]) +
+          sum(y_i * log(p_i) + (1 - y_i) * log(1 - p_i))
+      }
+    } else {
+      # log( (1 - psi) + psi * prod(1 - p) )
+      for (s in seq_len(n_samples)) {
+        p_i <- p_long_mat[rows_i, s]
+        q_i <- prod(1 - p_i)
+        ll_matrix[i, s] <- log(clamp((1 - psi_mat[i, s]) +
+                                       psi_mat[i, s] * q_i))
+      }
+    }
+  }
+
+  # --- WAIC aggregation ---
+  # lppd_i = log( 1/S sum_s exp(ll_s[i]) )  — use log-sum-exp
+  lppd_site <- apply(ll_matrix, 1, function(ll) {
+    mx <- max(ll)
+    mx + log(mean(exp(ll - mx)))
+  })
+  lppd <- sum(lppd_site)
+
+  # p_waic_i = Var_s( ll_s[i] )
+  p_waic <- sum(apply(ll_matrix, 1, var))
+
+  waic <- -2 * (lppd - p_waic)
+
+  list(waic = waic, lppd = lppd, p_waic = p_waic, ll_site = lppd_site)
+}
+
+
 #'
 #' Returns WAIC for the occupancy and detection components separately
 #' and combined. Analogous to spOccupancy::waicOcc().
@@ -402,21 +541,31 @@ ppcOccu <- function(object, fit.stat = c("freeman-tukey", "chi-squared"),
 #' @export
 waicOccu <- function(object, by.sp = FALSE) {
 
+  # The non-spatial occupancy model uses binomial(M=1000) encoding internally.
+  # INLA computes WAIC on that scale, inflating it by ~M.  Correct by dividing
+  # the occupancy WAIC components by M so the result is on the per-site
+  # Bernoulli scale, comparable to spOccupancy's waicOcc().
+  .occ_M <- function(obj) {
+    M <- tryCatch(obj$occ_df$Ntrials[1], error = function(e) 1L)
+    if (is.null(M) || is.na(M) || M < 1L) 1L else M
+  }
+
   if (inherits(object, "occu_inla_ms") && by.sp) {
     # Per-species WAIC
     results <- lapply(object$species_names, function(sp) {
       fit <- object$species_fits[[sp]]
       if (is.null(fit)) return(data.frame(species = sp, elpd = NA, pD = NA, WAIC = NA))
 
+      M <- .occ_M(fit)
       occ_waic <- fit$occ_fit$waic
       det_waic <- fit$det_fit$waic
 
       data.frame(
         species = sp,
-        elpd    = sum(occ_waic$local.waic / -2, na.rm = TRUE) +
+        elpd    = sum(occ_waic$local.waic / -2, na.rm = TRUE) / M +
                   sum(det_waic$local.waic / -2, na.rm = TRUE),
-        pD      = (occ_waic$p.eff %||% NA) + (det_waic$p.eff %||% NA),
-        WAIC    = (occ_waic$waic %||% NA) + (det_waic$waic %||% NA)
+        pD      = (occ_waic$p.eff %||% NA) / M + (det_waic$p.eff %||% NA),
+        WAIC    = (occ_waic$waic %||% NA) / M + (det_waic$waic %||% NA)
       )
     })
     return(do.call(rbind, results))
@@ -424,12 +573,13 @@ waicOccu <- function(object, by.sp = FALSE) {
 
   if (inherits(object, "occu_inla_int")) {
     # Integrated model: per-source WAIC for detection
+    M <- .occ_M(object)
     occ_waic <- object$occ_fit$waic
     parts <- list(data.frame(
       component = "occupancy",
-      elpd      = sum(occ_waic$local.waic / -2, na.rm = TRUE),
-      pD        = occ_waic$p.eff %||% NA,
-      WAIC      = occ_waic$waic %||% NA
+      elpd      = sum(occ_waic$local.waic / -2, na.rm = TRUE) / M,
+      pD        = (occ_waic$p.eff %||% NA) / M,
+      WAIC      = (occ_waic$waic %||% NA) / M
     ))
 
     for (d in seq_along(object$det_fits)) {
@@ -455,28 +605,14 @@ waicOccu <- function(object, by.sp = FALSE) {
     return(results)
   }
 
-  # Standard single-species model
-  occ_waic <- object$occ_fit$waic
-  det_waic <- object$det_fit$waic
+  # Standard single-species model — compute WAIC on Bernoulli scale
+  bw <- compute_bernoulli_waic(object)
 
   data.frame(
-    component = c("occupancy", "detection", "total"),
-    elpd = c(
-      sum(occ_waic$local.waic / -2, na.rm = TRUE),
-      sum(det_waic$local.waic / -2, na.rm = TRUE),
-      sum(occ_waic$local.waic / -2, na.rm = TRUE) +
-        sum(det_waic$local.waic / -2, na.rm = TRUE)
-    ),
-    pD = c(
-      occ_waic$p.eff %||% NA,
-      det_waic$p.eff %||% NA,
-      (occ_waic$p.eff %||% 0) + (det_waic$p.eff %||% 0)
-    ),
-    WAIC = c(
-      occ_waic$waic %||% NA,
-      det_waic$waic %||% NA,
-      (occ_waic$waic %||% 0) + (det_waic$waic %||% 0)
-    )
+    component = "total",
+    elpd      = bw$lppd,
+    pD        = bw$p_waic,
+    WAIC      = bw$waic
   )
 }
 
@@ -702,6 +838,58 @@ simulate.occu_inla <- function(object, nsim = 250L, seed = 123L,
 }
 
 
+#' @rdname simulate.occu_inla
+#' @export
+simulate.occu_inla_temporal <- function(object, nsim = 250L, seed = 123L,
+                                         level = c("site", "obs"), ...) {
+  level <- match.arg(level)
+  set.seed(seed)
+
+  # Temporal fits store per-period psi/p in period_fits
+  n_periods <- object$n_periods
+  N <- if (length(object$data_list) > 0) object$data_list[[1]]$N else nrow(object$psi_mat)
+
+  # Reconstruct y by stacking across periods (N x total_J)
+  y_list <- lapply(seq_len(n_periods), function(t) object$data_list[[t]]$y)
+  y_full <- do.call(cbind, y_list)
+
+  # Reconstruct psi (use psi_mat if available, else period_fits)
+  psi_vec <- if (!is.null(object$psi_mat)) {
+    rowMeans(clamp(object$psi_mat))
+  } else {
+    rowMeans(do.call(cbind, lapply(object$period_fits, function(pf) clamp(pf$psi_hat))))
+  }
+
+  # Reconstruct p (stack across periods)
+  p_list <- lapply(object$period_fits, function(pf) clamp(pf$p_hat))
+  p_full <- do.call(cbind, p_list)
+
+  psi <- clamp(psi_vec)
+  not_na <- !is.na(y_full)
+  J_total <- ncol(y_full)
+
+  if (level == "site") {
+    out <- matrix(NA_integer_, N, nsim)
+    for (s in seq_len(nsim)) {
+      z <- rbinom(N, 1L, psi)
+      y_sim <- matrix(0L, N, J_total)
+      y_sim[not_na] <- rbinom(sum(not_na), 1L, (z * p_full)[not_na])
+      out[, s] <- rowSums(y_sim)
+    }
+  } else {
+    obs_idx <- which(not_na)
+    n_obs <- length(obs_idx)
+    out <- matrix(NA_integer_, n_obs, nsim)
+    for (s in seq_len(nsim)) {
+      z <- rbinom(N, 1L, psi)
+      prob <- (z * p_full)[obs_idx]
+      out[, s] <- rbinom(n_obs, 1L, prob)
+    }
+  }
+  out
+}
+
+
 # ---------------------------------------------------------------------------
 #  moranI  —  Moran's I test for spatial autocorrelation in residuals
 # ---------------------------------------------------------------------------
@@ -836,9 +1024,15 @@ durbinWatson <- function(object, resid.type = "deviance",
 
   if (inherits(object, "occu_inla_temporal")) {
     # Average occupancy residual per period
-    r_list <- residuals(object, type = resid.type)
-    x <- vapply(r_list, function(r) mean(r$occ.resids, na.rm = TRUE),
-                numeric(1))
+    r <- residuals(object, type = resid.type)$occ.resids
+    # psi_mat has N rows, n_periods cols — use that shape for per-period means
+    n_periods <- object$n_periods
+    x <- vapply(seq_len(n_periods), function(t) {
+      psi_t <- if (!is.null(object$psi_mat)) object$psi_mat[, t] else object$period_fits[[t]]$psi_hat
+      y_t <- object$data_list[[t]]$y
+      detected_t <- rowSums(y_t == 1, na.rm = TRUE) > 0
+      mean(as.integer(detected_t) - clamp(psi_t), na.rm = TRUE)
+    }, numeric(1))
   } else if (is.numeric(object)) {
     x <- object
   } else {
@@ -1025,8 +1219,15 @@ dharma <- function(object, nsim = 250L, seed = 123L, ...) {
 #' @export
 pitResiduals <- function(object, nsim = 250L, seed = 123L) {
   sims <- simulate(object, nsim = nsim, seed = seed, level = "site")
-  obs  <- rowSums(object$data$y, na.rm = TRUE)
-  N    <- length(obs)
+
+  # Temporal models store data in data_list
+  if (inherits(object, "occu_inla_temporal") && is.null(object$data$y)) {
+    y_list <- lapply(seq_len(object$n_periods), function(t) object$data_list[[t]]$y)
+    obs <- rowSums(do.call(cbind, y_list), na.rm = TRUE)
+  } else {
+    obs <- rowSums(object$data$y, na.rm = TRUE)
+  }
+  N <- length(obs)
 
   # P(sim < obs) and P(sim <= obs) per site
   lower <- rowMeans(sims < obs)
@@ -1524,10 +1725,19 @@ print.occu_identifiability <- function(x, ...) {
 #' @export
 checkModel <- function(object, nsim = 250L, seed = 123L) {
   sims <- simulate(object, nsim = nsim, seed = seed, level = "site")
-  obs  <- rowSums(object$data$y, na.rm = TRUE)
-  pit  <- pitResiduals(object, nsim = nsim, seed = seed)
 
-  has_coords <- !is.null(object$data$coords)
+  # Temporal models store data in data_list, not data$y
+  if (inherits(object, "occu_inla_temporal") && is.null(object$data$y)) {
+    y_list <- lapply(seq_len(object$n_periods), function(t) object$data_list[[t]]$y)
+    y_full <- do.call(cbind, y_list)
+    obs <- rowSums(y_full, na.rm = TRUE)
+    has_coords <- !is.null(object$data_list[[1]]$coords)
+  } else {
+    obs <- rowSums(object$data$y, na.rm = TRUE)
+    has_coords <- !is.null(object$data$coords)
+  }
+
+  pit <- pitResiduals(object, nsim = nsim, seed = seed)
   n_panels <- if (has_coords) 4L else 3L
   layout_mat <- if (has_coords) matrix(1:4, 2, 2) else matrix(1:3, 1, 3)
 
@@ -1547,8 +1757,15 @@ checkModel <- function(object, nsim = 250L, seed = 123L) {
   abline(0, 1, col = "red", lty = 2, lwd = 1.5)
 
   # --- Panel 2: Residuals vs fitted ---
-  fv <- rowSums(fitted(object)$y.rep, na.rm = TRUE)
-  r  <- residuals(object, type = "deviance")$occ.resids
+  # Temporal objects need special handling (period_fits lack full structure)
+  if (inherits(object, "occu_inla_temporal") && is.null(object$data$y)) {
+    fv <- rowMeans(clamp(object$psi_mat))
+    r  <- obs - fv * ncol(do.call(cbind, lapply(seq_len(object$n_periods),
+             function(t) object$data_list[[t]]$y)))
+  } else {
+    fv <- rowSums(fitted(object)$y.rep, na.rm = TRUE)
+    r  <- residuals(object, type = "deviance")$occ.resids
+  }
   plot(fv, r,
        xlab = "Fitted (site detection count)", ylab = "Deviance residuals",
        main = "Residuals vs Fitted",
@@ -1570,7 +1787,8 @@ checkModel <- function(object, nsim = 250L, seed = 123L) {
   # --- Panel 4: Moran's I correlogram (if spatial) ---
   moran_result <- NULL
   if (has_coords) {
-    coords <- object$data$coords
+    coords <- if (!is.null(object$data$coords)) object$data$coords
+              else object$data_list[[1]]$coords
     ks <- c(3, 5, 8, 12, 20)
     ks <- ks[ks < nrow(coords)]
     I_vals <- numeric(length(ks))

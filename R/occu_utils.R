@@ -24,18 +24,18 @@ occu_loglik <- function(y, psi, p) {
 
   detected <- rowSums(y == 1, na.rm = TRUE) > 0
   valid <- !is.na(y)
+  log_p <- log(p_c)
+  log_1mp <- log(1 - p_c)
 
   # Detection log-likelihood per cell (0 where NA)
-  ll_cell <- ifelse(valid,
-                    y * log(p_c) + (1 - y) * log(1 - p_c),
-                    0)
+  ll_cell <- (y * log_p + (1 - y) * log_1mp) * valid
 
   # Detected sites: log(psi) + sum of detection log-lik
   ll_det <- log(psi_c[detected]) + rowSums(ll_cell[detected, , drop = FALSE])
 
   # Undetected sites: log((1 - psi) + psi * prod(1 - p))
   # prod(1 - p) across visits = exp(sum(log(1-p))) for non-NA cells
-  log_q <- rowSums(ifelse(valid, log(1 - p_c), 0))
+  log_q <- rowSums(log_1mp * valid)
   q_vec <- exp(log_q)
   ll_undet <- log(clamp((1 - psi_c[!detected]) + psi_c[!detected] * q_vec[!detected]))
 
@@ -57,7 +57,7 @@ compute_weights <- function(y, psi, p) {
   if (any(undet)) {
     p_c <- clamp(p)
     # prod(1 - p) per site via log-sum, only over non-NA cells
-    log_q <- rowSums(ifelse(!is.na(y), log(1 - p_c), 0))
+    log_q <- rowSums(log(1 - p_c) * !is.na(y))
     q_vec <- exp(log_q[undet])
     psi_c <- clamp(psi[undet])
     w[undet] <- (psi_c * q_vec) / ((1 - psi_c) + psi_c * q_vec)

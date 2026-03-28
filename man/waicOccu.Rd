@@ -2,7 +2,8 @@
 % Please edit documentation in R/occu_diagnostics.R
 \name{waicOccu}
 \alias{waicOccu}
-\title{Compute WAIC for occupancy models}
+\title{Returns WAIC for the occupancy and detection components separately
+and combined. Analogous to spOccupancy::waicOcc().}
 \usage{
 waicOccu(object, by.sp = FALSE)
 }

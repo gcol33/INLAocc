@@ -91,9 +91,9 @@ prepare_data <- function(data, multispecies, integrated, temporal) {
   if (is_jsdm) return(data)
 
   if (isTRUE(multispecies)) {
-    # Multi-species + temporal: 4D array (species x sites x seasons x visits)
-    # Pass through directly — engine_ms_temporal handles the 4D structure
-    if (!is.null(temporal)) return(data)
+    # Multi-species + temporal or integrated: pass through raw —
+    # engine_ms_temporal and engine_ms_int handle their own data structures
+    if (!is.null(temporal) || isTRUE(integrated)) return(data)
     if (inherits(data, "occu_data_ms")) return(data)
     y_input <- data$y
     if (is.array(y_input) && length(dim(y_input)) == 3) {

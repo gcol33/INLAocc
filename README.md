@@ -45,7 +45,7 @@ MCMC runtime grows linearly with the number of sites. INLAocc grows sublinearly 
 
 All benchmarks use simulated data with known true occupancy probabilities. The figure below shows the correlation between estimated and true site-level occupancy across all three model types. INLAocc matches MCMC accuracy at every scale tested.
 
-![Correlation between estimated and true occupancy probabilities on simulated data. All three methods recover the truth comparably; the EM+MI approximation does not sacrifice accuracy for speed.](man/figures/accuracy.png)
+![Correlation between estimated and true occupancy probabilities on simulated data. All three methods recover the truth comparably; the EM approximation does not sacrifice accuracy for speed.](man/figures/accuracy.png)
 
 ### Parameter recovery
 
@@ -112,7 +112,7 @@ checkIdentifiability(fit)          # also works post-fit (boundary estimates, co
 
 Also available: `ppcOccu()` (posterior predictive checks), `waicOccu()`,
 `AIC()`, `BIC()`, `pitResiduals()`, `simulate()`.
-If DHARMa is installed, `dharma(fit)` creates a full DHARMa object.
+If [DHARMa](https://cran.r-project.org/package=DHARMa) is installed, `dharma(fit)` creates a full DHARMa object.
 
 ### Model Selection & Averaging
 
@@ -242,11 +242,22 @@ avg <- modelAverage(null = m1, elev = m2, full = m3)
 
 ## Coming from [spOccupancy](https://www.jeffdoser.com/files/spoccupancy-web/)?
 
-INLAocc accepts the same `list(y, occ.covs, det.covs, coords)` data format. The main differences: one `occu()` function instead of separate model functions, no MCMC tuning parameters, and random slopes are supported in addition to random intercepts.
+INLAocc accepts the same `list(y, occ.covs, det.covs, coords)` data format. The main differences: one `occu()` function instead of separate model functions, no MCMC tuning parameters, and random slopes are supported in addition to random intercepts (spOccupancy ≤ 0.8.1 supports random intercepts only).
 
 ## Documentation
 
 - [Quick Start](https://gillescolling.com/INLAocc/articles/quickstart.html)
+- [Data Formatting](https://gillescolling.com/INLAocc/articles/data-formatting.html)
+- [Random Effects](https://gillescolling.com/INLAocc/articles/random-effects.html)
+- [Spatial Models](https://gillescolling.com/INLAocc/articles/spatial-models.html)
+- [Spatially-Varying Coefficients](https://gillescolling.com/INLAocc/articles/svc-models.html)
+- [Temporal Models](https://gillescolling.com/INLAocc/articles/temporal-models.html)
+- [Multi-Species & Community Models](https://gillescolling.com/INLAocc/articles/multi-species.html)
+- [Integrated Models](https://gillescolling.com/INLAocc/articles/integrated-models.html)
+- [Diagnostics & Model Selection](https://gillescolling.com/INLAocc/articles/diagnostics.html)
+- [Identifiability](https://gillescolling.com/INLAocc/articles/identifiability.html)
+- [Algorithm Details](https://gillescolling.com/INLAocc/articles/algorithm-details.html)
+- [Migrating from spOccupancy](https://gillescolling.com/INLAocc/articles/spoccupancy-migration.html)
 - [Full Reference](https://gillescolling.com/INLAocc/reference/)
 
 ## Support

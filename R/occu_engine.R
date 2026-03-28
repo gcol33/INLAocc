@@ -341,6 +341,7 @@ em_inla <- function(data, occ_formula, det_formula,
                     occ_re = NULL, det_re = NULL,
                     spatial = NULL, priors = NULL,
                     max_iter = 50, tol = 1e-4, damping = 0.3,
+                    correction = "auto",
                     num.threads = "1:1",
                     control.inla = NULL,
                     verbose = 1) {
@@ -356,6 +357,11 @@ em_inla <- function(data, occ_formula, det_formula,
   # --- Prep: build data structures once ---
   det_prep <- prep_detection(data, det_formula, det_re)
   occ_prep <- prep_occupancy(data, occ_formula, occ_re, spatial)
+
+  # GLM fast path: use glm() for EM iterations when the model is simple
+  # (no random effects, no spatial). INLA is only needed for the final fit
+  # and the Gibbs loop. This avoids INLA's ~0.3s/call process spawn overhead.
+  use_glm_em <- is.null(occ_re) && is.null(det_re) && is.null(spatial)
 
   # INLA control: skip DIC/WAIC for intermediate iters, full for final
   ctrl_fast <- list(config = TRUE, dic = FALSE, waic = FALSE)
@@ -426,39 +432,43 @@ em_inla <- function(data, occ_formula, det_formula,
     # --- M-step: Detection ---
     # Skip when detection has stabilized (delta_p < tol for 2 consecutive iters)
     if (!det_frozen) {
-      det_result <- fit_detection_inla(
-        det_prep, data, weights,
-        control.inla = control.inla,
-        control.compute = ctrl_fast,
-        control.mode = mode_to_ctrl(prev_det_mode),
-        num.threads = num.threads,
-        verbose = verbose >= 2
-      )
-      prev_det_mode <- extract_mode(det_result$fit)
+      if (use_glm_em) {
+        det_result <- fit_detection_glm(det_prep, data, weights)
+      } else {
+        det_result <- fit_detection_inla(
+          det_prep, data, weights,
+          control.inla = control.inla,
+          control.compute = ctrl_fast,
+          control.mode = mode_to_ctrl(prev_det_mode),
+          num.threads = num.threads,
+          verbose = verbose >= 2
+        )
+        prev_det_mode <- extract_mode(det_result$fit)
+      }
       p_hat <- det_result$p_hat
       p_hat[is.na(p_hat)] <- p_old[is.na(p_hat)]
     }
 
     # --- M-step: Occupancy ---
-    occ_result <- fit_occupancy_inla(
-      occ_prep, data, weights, spatial_obj = spatial,
-      control.inla = control.inla,
-      control.compute = ctrl_fast,
-      control.mode = mode_to_ctrl(prev_occ_mode),
-      num.threads = num.threads,
-      verbose = verbose >= 2
-    )
-    prev_occ_mode <- extract_mode(occ_result$fit)
+    if (use_glm_em) {
+      occ_result <- fit_occupancy_glm(occ_prep, data, weights)
+    } else {
+      occ_result <- fit_occupancy_inla(
+        occ_prep, data, weights, spatial_obj = spatial,
+        control.inla = control.inla,
+        control.compute = ctrl_fast,
+        control.mode = mode_to_ctrl(prev_occ_mode),
+        num.threads = num.threads,
+        verbose = verbose >= 2
+      )
+      prev_occ_mode <- extract_mode(occ_result$fit)
+    }
     psi_hat <- occ_result$psi_hat
 
     # --- E-step: Update weights ---
     weights_new <- compute_weights(data$y, psi_hat, p_hat)
 
-    if (damp_current > 0) {
-      weights <- damp_current * weights + (1 - damp_current) * weights_new
-    } else {
-      weights <- weights_new
-    }
+    weights <- damp_current * weights + (1 - damp_current) * weights_new
 
     # --- Convergence check ---
     delta_psi <- max(abs(psi_hat - psi_old))
@@ -534,18 +544,32 @@ em_inla <- function(data, occ_formula, det_formula,
 
   z_hat <- compute_weights(data$y, psi_hat, p_hat)
 
-  # --- Gibbs-style data augmentation to debias both occ and det betas ---
-  # The EM's soft weights attenuate coefficients. We alternate:
-  #   1. Sample z | (psi, p, y) — hard Bernoulli from posterior
-  #   2. Fit occ | z → new betas_occ, psi  (INLA on binary z)
-  #   3. Fit det | z=1 subset → new betas_det, p  (INLA on subset)
-  # Collect draws after burn-in, pool with Rubin's rules.
-  # This is the Data Augmentation algorithm (Tanner & Wong 1987),
-  # following tulpa's Gibbs pattern of component-wise conditional updates.
-  mi_result <- mi_data_augmentation(
-    occ_prep, det_prep, data, z_hat, spatial,
-    control.inla = control.inla, verbose = verbose
-  )
+  # --- Post-EM debiasing ---
+  # The EM's soft weights attenuate coefficients. Two correction methods:
+  #   "mi"    — independent draws of z, refit both submodels, pool (Rubin 1987)
+  #   "gibbs" — sequential Gibbs chain: z|params → occ|z → det|z (Tanner & Wong 1987)
+  #   "auto"  — Gibbs for now; will benchmark MI vs Gibbs to decide
+  #   "none"  — skip correction entirely
+  # "auto": MI-glm for simple models (fast, no INLA overhead in correction),
+  # Gibbs for spatial/RE models (needs INLA at each step for the spatial field).
+  has_re_or_spatial <- !is.null(spatial) || !is.null(occ_re) || !is.null(det_re)
+  correction_method <- if (correction == "auto") {
+    if (has_re_or_spatial) "gibbs" else "mi"
+  } else {
+    correction
+  }
+
+  mi_result <- if (correction_method == "none") {
+    NULL
+  } else if (correction_method == "mi") {
+    mi_joint(occ_prep, det_prep, data, z_hat, spatial,
+             control.inla = control.inla,
+             n_cores = getOption("INLAocc.mi.cores", 1L),
+             verbose = verbose)
+  } else {
+    mi_data_augmentation(occ_prep, det_prep, data, z_hat, spatial,
+                         control.inla = control.inla, verbose = verbose)
+  }
   mi_det_result <- NULL
   if (!is.null(mi_result)) {
     occ_result$fit$summary.fixed <- mi_result$occ_summary
@@ -581,203 +605,20 @@ em_inla <- function(data, occ_formula, det_formula,
 
 
 # ---------------------------------------------------------------------------
-# Multiple imputation for occupancy beta debiasing
+# Joint MI: independent draws for both occ and det debiasing
 # ---------------------------------------------------------------------------
+#' Each imputation independently draws z from converged weights, then refits
+#' both submodels conditional on it. Draws are independent (not a chain),
+#' Within each round, draws are independent (Rubin's rules exact).
+#' Across rounds, z_hat is updated from pooled estimates, fixing the bias
+#' that comes from drawing z from the EM's attenuated weights.
 #' @noRd
-mi_occupancy <- function(occ_prep, data, z_hat, spatial,
-                          control.inla = NULL, K = 20L,
-                          K_min = 5L, mi_tol = 0.05,
-                          verbose = 1) {
-  check_inla()
-  N <- data$N
-  detected <- data$detected
-  undetected_idx <- which(!detected)
-
-  if (length(undetected_idx) == 0) return(NULL)
-  if (verbose >= 1) cat(sprintf("  MI debiasing (up to %d imputations)...\n", K))
-
-  use_spatial <- occ_prep$spatial
-  ctrl <- list(config = FALSE, dic = FALSE, waic = FALSE)
-
-  # Build a clean formula for MI (no weighted Bernoulli extra rows)
-  # Use the base formula without spatial terms — add spatial via stack
-  cov_names <- setdiff(names(data$occ.covs), c("z", "site", "Ntrials", "w"))
-  if (length(cov_names) > 0) {
-    mi_formula_str <- paste("z ~", paste(cov_names, collapse = " + "))
-  } else {
-    mi_formula_str <- "z ~ 1"
-  }
-  if (use_spatial) {
-    mi_formula_str <- paste(mi_formula_str, "+ f(spatial, model = spde)")
-  }
-  mi_formula <- as.formula(mi_formula_str)
-
-  # --- Single imputation function ---
-  run_one_mi <- function(seed) {
-    set.seed(seed)
-    z_imp <- as.integer(detected)
-    z_imp[undetected_idx] <- rbinom(
-      length(undetected_idx), 1, clamp(z_hat[undetected_idx])
-    )
-
-    occ_df <- data$occ.covs
-    occ_df$site <- seq_len(N)
-    occ_df$z <- z_imp
-    nt <- rep(1L, N)
-
-    if (use_spatial) {
-      si <- occ_prep$stack_info
-      A_obs <- si$A[seq_len(N), , drop = FALSE]
-      drop_cols <- c("z", "site")
-      cov_df <- occ_df[, setdiff(names(occ_df), drop_cols), drop = FALSE]
-
-      stack <- INLA::inla.stack(
-        data = list(z = z_imp),
-        A = list(A_obs, 1),
-        effects = list(
-          list(spatial = seq_len(si$n_mesh)),
-          cov_df
-        ),
-        tag = "occ"
-      )
-      stack_data <- INLA::inla.stack.data(stack)
-      stack_data$spde <- si$spde
-      n_stack <- nrow(stack_data)
-
-      fit <- suppressWarnings(INLA::inla(
-        formula = mi_formula,
-        family = "binomial",
-        Ntrials = rep(1L, n_stack),
-        data = stack_data,
-        control.predictor = list(A = INLA::inla.stack.A(stack), compute = TRUE),
-        num.threads = "1:1",
-        control.inla = control.inla %||% INLA::inla.set.control.inla.default(),
-        control.compute = ctrl,
-        verbose = FALSE
-      ))
-      idx <- INLA::inla.stack.index(stack, "occ")$data
-      psi_k <- fit$summary.fitted.values$mean[idx]
-    } else {
-      fit <- suppressWarnings(INLA::inla(
-        formula = mi_formula,
-        family = "binomial",
-        Ntrials = nt,
-        data = occ_df,
-        num.threads = "1:1",
-        control.inla = control.inla %||% INLA::inla.set.control.inla.default(),
-        control.compute = ctrl,
-        verbose = FALSE
-      ))
-      psi_k <- fit$summary.fitted.values$mean[seq_len(N)]
-    }
-
-    list(beta = fit$summary.fixed, psi = psi_k)
-  }
-
-  # --- Run K imputations (adaptive stopping) ---
-  seeds <- sample.int(1e7, K)
-  beta_samples <- list()
-  psi_samples  <- matrix(NA, N, K)
-  prev_V_between <- NULL
-  K_used <- K
-
-  # Running accumulators for incremental variance (Welford's algorithm)
-  beta_sum <- NULL
-  beta_sum_sq <- NULL
-
-  for (k in seq_len(K)) {
-    res <- run_one_mi(seeds[k])
-    beta_samples[[k]] <- res$beta
-    psi_samples[, k]  <- res$psi
-
-    # Adaptive stopping after K_min imputations
-    if (k >= K_min) {
-      # Incremental mean/variance via running sums (O(K) total, not O(K²))
-      bm <- res$beta$mean
-      if (is.null(beta_sum)) {
-        # First time reaching K_min: initialize from all samples so far
-        all_means <- sapply(beta_samples[seq_len(k)], function(b) b$mean)
-        if (!is.matrix(all_means)) all_means <- matrix(all_means, nrow = 1)
-        beta_sum <- rowSums(all_means)
-        beta_sum_sq <- rowSums(all_means^2)
-      } else {
-        beta_sum <- beta_sum + bm
-        beta_sum_sq <- beta_sum_sq + bm^2
-      }
-      V_between <- (beta_sum_sq / k) - (beta_sum / k)^2
-
-      if (!is.null(prev_V_between)) {
-        denom <- pmax(prev_V_between, 1e-10)
-        rel_change <- max(abs(V_between - prev_V_between) / denom)
-        if (rel_change < mi_tol) {
-          K_used <- k
-          if (verbose >= 1)
-            cat(sprintf("    MI converged at K=%d (rel_change=%.4f < %.2f)\n",
-                        k, rel_change, mi_tol))
-          break
-        }
-      }
-      prev_V_between <- V_between
-    }
-  }
-
-  # --- Pool with Rubin's rules ---
-  K_actual <- K_used
-  beta_samples <- beta_samples[seq_len(K_actual)]
-  psi_samples  <- psi_samples[, seq_len(K_actual), drop = FALSE]
-
-  n_coef <- nrow(beta_samples[[1]])
-  coef_names <- rownames(beta_samples[[1]])
-
-  beta_means <- sapply(beta_samples, function(b) b$mean)  # coef x K
-  beta_vars  <- sapply(beta_samples, function(b) b$sd^2)
-  if (!is.matrix(beta_means)) {
-    beta_means <- matrix(beta_means, nrow = 1)
-    beta_vars  <- matrix(beta_vars, nrow = 1)
-  }
-
-  pooled_mean <- rowMeans(beta_means)
-  V_within    <- rowMeans(beta_vars)
-  V_between   <- apply(beta_means, 1, var)
-  V_total     <- V_within + (1 + 1/K_actual) * V_between
-  pooled_sd   <- sqrt(V_total)
-
-  summary_fixed <- data.frame(
-    mean    = pooled_mean,
-    sd      = pooled_sd,
-    `0.025quant` = pooled_mean - 1.96 * pooled_sd,
-    `0.5quant`   = pooled_mean,
-    `0.975quant` = pooled_mean + 1.96 * pooled_sd,
-    row.names = coef_names,
-    check.names = FALSE
-  )
-
-  psi_hat <- rowMeans(psi_samples)
-
-  if (verbose >= 1) {
-    cat(sprintf("    MI betas (%d imputations): [%s]\n", K_actual,
-                paste(round(pooled_mean, 3), collapse = ", ")))
-    cat(sprintf("    MI psi range: [%.3f, %.3f] mean=%.3f\n",
-                min(psi_hat), max(psi_hat), mean(psi_hat)))
-  }
-
-  list(
-    summary.fixed = summary_fixed,
-    psi_hat       = psi_hat,
-    beta_samples  = beta_means,
-    K             = K_actual
-  )
-}
-
-
-# ---------------------------------------------------------------------------
-# Multiple imputation for detection beta debiasing
-# ---------------------------------------------------------------------------
-#' @noRd
-mi_detection <- function(det_prep, data, z_hat,
-                         control.inla = NULL, K = 20L,
-                         K_min = 5L, mi_tol = 0.05,
-                         verbose = 1) {
+mi_joint <- function(occ_prep, det_prep, data, z_hat, spatial,
+                     control.inla = NULL, K = 20L,
+                     K_min = 5L, mi_tol = 0.05,
+                     n_rounds = 3L,
+                     n_cores = 1L,
+                     verbose = 1) {
   check_inla()
   N <- data$N
   J <- data$J
@@ -785,139 +626,260 @@ mi_detection <- function(det_prep, data, z_hat,
   undetected_idx <- which(!detected)
 
   if (length(undetected_idx) == 0) return(NULL)
-  if (verbose >= 1) cat("  MI detection debiasing...\n")
+  if (verbose >= 1)
+    cat(sprintf("  MI joint debiasing (%d rounds x %d imputations)...\n", n_rounds, K))
 
+  use_spatial <- occ_prep$spatial
   ctrl <- list(config = FALSE, dic = FALSE, waic = FALSE)
 
-  # Build formula RHS string once; each imputation creates a fresh formula
-  # in the global environment to avoid INLA's internal result caching.
-  det_formula_rhs <- as.character(det_prep$formula)[3]
+  # Build formulas once
+  cov_names <- setdiff(names(data$occ.covs), c("z", "site", "Ntrials", "w"))
+  occ_fstr <- if (length(cov_names) > 0) paste("z ~", paste(cov_names, collapse = " + ")) else "z ~ 1"
+  if (use_spatial) occ_fstr <- paste(occ_fstr, "+ f(spatial, model = spde)")
+  occ_formula <- as.formula(occ_fstr)
+  det_fstr <- paste("y_det ~", as.character(det_prep$formula)[3])
+  det_formula <- as.formula(det_fstr, env = globalenv())
 
-  run_one_mi <- function(seed) {
+  # Warm-start from EM mode (same starting point for all imputations —
+  # valid because draws are independent; we just reuse the optimization hint)
+  em_occ_mode <- NULL
+  em_det_mode <- NULL
+
+  build_ctrl_mode <- function(prev_mode, transfer_x = TRUE) {
+    if (is.null(prev_mode)) return(NULL)
+    has_theta <- length(prev_mode$theta) > 0
+    cm <- list(restart = has_theta)
+    if (has_theta) cm$theta <- prev_mode$theta
+    if (transfer_x && length(prev_mode$x) > 0) cm$x <- prev_mode$x
+    cm
+  }
+
+  # --- Helper: pack glm summary into INLA-compatible format ---
+  glm_to_summary <- function(fit) {
+    cc <- summary(fit)$coefficients
+    data.frame(
+      mean = cc[, "Estimate"],
+      sd   = cc[, "Std. Error"],
+      row.names = rownames(cc),
+      check.names = FALSE
+    )
+  }
+
+  # --- Single imputation: draw z, fit occ|z, fit det|z=1 ---
+  # Uses glm() for non-spatial models (milliseconds per call);
+  # falls back to INLA only when spatial structure (SPDE) is needed.
+  run_one <- function(seed) {
     set.seed(seed)
     z_imp <- as.integer(detected)
     z_imp[undetected_idx] <- rbinom(
       length(undetected_idx), 1, clamp(z_hat[undetected_idx])
     )
 
-    # Build detection data only for sites with z=1 (subsetting, not weighting).
-    # INLA caches results when the same formula+structure is reused with
-    # zero-weight rows, so we physically exclude z=0 sites instead.
+    # -- Occupancy | z --
+    occ_df <- data$occ.covs
+    occ_df$site <- seq_len(N)
+    occ_df$z <- z_imp
+
+    if (use_spatial) {
+      si <- occ_prep$stack_info
+      A_obs <- si$A[seq_len(N), , drop = FALSE]
+      cov_df <- occ_df[, setdiff(names(occ_df), c("z", "site")), drop = FALSE]
+      stack <- INLA::inla.stack(
+        data = list(z = z_imp), A = list(A_obs, 1),
+        effects = list(list(spatial = seq_len(si$n_mesh)), cov_df), tag = "occ"
+      )
+      stack_data <- INLA::inla.stack.data(stack)
+      stack_data$spde <- si$spde
+      occ_fit <- suppressWarnings(INLA::inla(
+        formula = occ_formula, family = "binomial",
+        Ntrials = rep(1L, nrow(stack_data)), data = stack_data,
+        control.predictor = list(A = INLA::inla.stack.A(stack), compute = TRUE),
+        num.threads = "1:1",
+        control.inla = control.inla %||% INLA::inla.set.control.inla.default(),
+        control.mode = build_ctrl_mode(em_occ_mode, transfer_x = TRUE),
+        control.compute = ctrl, verbose = FALSE
+      ))
+      idx <- INLA::inla.stack.index(stack, "occ")$data
+      psi_k <- occ_fit$summary.fitted.values$mean[idx]
+      occ_beta <- occ_fit$summary.fixed
+      # Cache INLA mode for warm-start
+      if (is.null(em_occ_mode)) {
+        em_occ_mode <<- list(theta = occ_fit$mode$theta, x = occ_fit$mode$x)
+      }
+    } else {
+      # GLM: plain binomial, no INLA overhead
+      occ_glm <- glm(occ_formula, family = binomial, data = occ_df,
+                      control = glm.control(maxit = 50))
+      psi_k <- predict(occ_glm, type = "response")
+      occ_beta <- glm_to_summary(occ_glm)
+    }
+
+    # -- Detection | z=1 subset --
     occ_sites <- which(z_imp == 1L)
     y_sub <- data$y[occ_sites, , drop = FALSE]
     det_covs_sub <- if (!is.null(data$det.covs)) {
       lapply(data$det.covs, function(m) m[occ_sites, , drop = FALSE])
     }
-    det_df <- build_det_df(
-      y        = y_sub,
-      det_covs = det_covs_sub,
-      site_idx = occ_sites
-    )
-    det_df$.Ntrials <- rep(1L, nrow(det_df))
+    det_df <- build_det_df(y = y_sub, det_covs = det_covs_sub, site_idx = occ_sites)
 
-    f <- as.formula(paste("y_det ~", det_formula_rhs), env = globalenv())
+    # GLM for detection (always non-spatial in MI correction)
+    det_glm <- glm(det_formula, family = binomial, data = det_df,
+                    control = glm.control(maxit = 50))
+    p_fitted <- predict(det_glm, type = "response")
+    p_k <- matrix(NA, N, J)
+    p_k[cbind(det_df$site, det_df$visit)] <- p_fitted
+    if (any(is.na(p_k))) {
+      p_fill <- 1 / (1 + exp(-coef(det_glm)[1]))
+      p_k[is.na(p_k)] <- p_fill
+    }
+    det_beta <- glm_to_summary(det_glm)
 
-    fit <- suppressWarnings(INLA::inla(
-      formula         = f,
-      family          = "binomial",
-      Ntrials         = det_df$.Ntrials,
-      data            = det_df,
-      num.threads     = "1:1",
-      control.inla    = control.inla %||% INLA::inla.set.control.inla.default(),
-      control.compute = ctrl,
-      verbose         = FALSE
-    ))
-
-    p_fitted <- fit$summary.fitted.values$mean
-    p_hat <- matrix(NA, N, J)
-    p_hat[cbind(det_df$site, det_df$visit)] <- p_fitted
-
-    list(beta = fit$summary.fixed, p_hat = p_hat)
+    list(occ_beta = occ_beta, det_beta = det_beta, psi = psi_k, p = p_k)
   }
 
-  # --- Run K imputations (adaptive stopping) ---
-  seeds <- sample.int(1e7, K)
-  beta_samples <- list()
-  p_samples    <- array(NA, dim = c(N, J, K))
-  prev_V_between <- NULL
-  K_used <- K
+  # --- Rubin's pooling ---
+  pool_rubins <- function(draws) {
+    Kn <- length(draws)
+    coef_names <- rownames(draws[[1]])
+    beta_means <- sapply(draws, function(b) b$mean)
+    beta_vars  <- sapply(draws, function(b) b$sd^2)
+    if (!is.matrix(beta_means)) {
+      beta_means <- matrix(beta_means, nrow = 1)
+      beta_vars  <- matrix(beta_vars, nrow = 1)
+    }
+    pooled_mean <- rowMeans(beta_means)
+    V_within    <- rowMeans(beta_vars)
+    V_between   <- apply(beta_means, 1, var)
+    V_total     <- V_within + (1 + 1/Kn) * V_between
+    pooled_sd   <- sqrt(V_total)
+    data.frame(
+      mean         = pooled_mean,
+      sd           = pooled_sd,
+      `0.025quant` = pooled_mean - 1.96 * pooled_sd,
+      `0.5quant`   = pooled_mean,
+      `0.975quant` = pooled_mean + 1.96 * pooled_sd,
+      row.names    = coef_names,
+      check.names  = FALSE
+    )
+  }
 
-  beta_sum <- NULL
-  beta_sum_sq <- NULL
+  # --- Run n_rounds of MI, updating z_hat between rounds ---
+  # Within each round: K independent draws → pool with Rubin's rules.
+  # Between rounds: recompute z_hat from pooled psi/p so next round
+  # draws from a better distribution.
+  # Early rounds just need to update z_hat (5 draws suffice).
+  # Final round uses full K for accurate Rubin's pooling.
+  K_early <- min(5L, K)
+  current_z_hat <- z_hat
+  use_parallel <- n_cores > 1L
+  total_K <- 0L
 
-  for (k in seq_len(K)) {
-    res <- run_one_mi(seeds[k])
-    beta_samples[[k]] <- res$beta
-    p_samples[, , k]  <- res$p_hat
+  for (round in seq_len(n_rounds)) {
+    is_final <- round == n_rounds
+    K_round <- if (is_final) K else K_early
+    if (verbose >= 1) cat(sprintf("    Round %d/%d (K=%d)\n", round, n_rounds, K_round))
+    seeds <- sample.int(1e7, K_round)
 
-    if (k >= K_min) {
-      bm <- res$beta$mean
-      if (is.null(beta_sum)) {
-        all_means <- sapply(beta_samples[seq_len(k)], function(b) b$mean)
-        if (!is.matrix(all_means)) all_means <- matrix(all_means, nrow = 1)
-        beta_sum <- rowSums(all_means)
-        beta_sum_sq <- rowSums(all_means^2)
-      } else {
-        beta_sum <- beta_sum + bm
-        beta_sum_sq <- beta_sum_sq + bm^2
-      }
-      V_between <- (beta_sum_sq / k) - (beta_sum / k)^2
+    # run_one closure captures current_z_hat from this environment,
+    # but it reads z_hat — update the binding
+    z_hat <- current_z_hat
 
-      if (!is.null(prev_V_between)) {
-        denom <- pmax(prev_V_between, 1e-10)
-        rel_change <- max(abs(V_between - prev_V_between) / denom)
-        if (rel_change < mi_tol) {
-          K_used <- k
-          break
+    if (use_parallel) {
+      if (verbose >= 1) cat(sprintf("      %d imputations on %d cores...\n", K_round, n_cores))
+      cl <- parallel::makeCluster(n_cores)
+      on.exit(parallel::stopCluster(cl), add = TRUE)
+      parallel::clusterExport(cl, c(
+        "run_one", "occ_formula", "det_formula", "occ_prep", "det_prep",
+        "data", "z_hat", "detected", "undetected_idx", "use_spatial",
+        "ctrl", "control.inla", "N", "J", "em_occ_mode", "em_det_mode",
+        "build_ctrl_mode", "clamp", "build_det_df"
+      ), envir = environment())
+      parallel::clusterEvalQ(cl, { library(INLA); NULL })
+      results <- parallel::parLapply(cl, seeds, run_one)
+      parallel::stopCluster(cl)
+      on.exit(NULL)  # clear the on.exit since we stopped manually
+      K_used <- K_round
+    } else {
+      # Sequential with adaptive stopping
+      results <- vector("list", K_round)
+      occ_sum <- NULL; occ_sum_sq <- NULL
+      prev_V <- NULL
+      K_used <- K_round
+
+      for (k in seq_len(K_round)) {
+        results[[k]] <- run_one(seeds[k])
+
+        if (verbose >= 1 && round == n_rounds) {
+          cat(sprintf("      MI %2d: occ=[%s] det=[%s]\n", k,
+                      paste(round(results[[k]]$occ_beta$mean, 3), collapse = ", "),
+                      paste(round(results[[k]]$det_beta$mean, 3), collapse = ", ")))
+        }
+
+        # Adaptive stopping after K_min (only on final round for speed)
+        if (round == n_rounds && k >= K_min) {
+          combined <- c(results[[k]]$occ_beta$mean, results[[k]]$det_beta$mean)
+          if (is.null(occ_sum)) {
+            all_combined <- sapply(results[seq_len(k)], function(r)
+              c(r$occ_beta$mean, r$det_beta$mean))
+            if (!is.matrix(all_combined)) all_combined <- matrix(all_combined, nrow = 1)
+            occ_sum <- rowSums(all_combined)
+            occ_sum_sq <- rowSums(all_combined^2)
+          } else {
+            occ_sum <- occ_sum + combined
+            occ_sum_sq <- occ_sum_sq + combined^2
+          }
+          V_between <- (occ_sum_sq / k) - (occ_sum / k)^2
+
+          if (!is.null(prev_V)) {
+            denom <- pmax(prev_V, 1e-10)
+            rel_change <- max(abs(V_between - prev_V) / denom)
+            if (rel_change < mi_tol) {
+              K_used <- k
+              if (verbose >= 1)
+                cat(sprintf("      MI converged at K=%d (rel_change=%.4f)\n", k, rel_change))
+              break
+            }
+          }
+          prev_V <- V_between
         }
       }
-      prev_V_between <- V_between
     }
-  }
 
-  # --- Pool with Rubin's rules ---
-  K_actual <- K_used
-  beta_samples <- beta_samples[seq_len(K_actual)]
-  p_samples    <- p_samples[, , seq_len(K_actual), drop = FALSE]
+    # Unpack results
+    K_actual <- K_used
+    results <- results[seq_len(K_actual)]
+    total_K <- total_K + K_actual
+    occ_draws <- lapply(results, `[[`, "occ_beta")
+    det_draws <- lapply(results, `[[`, "det_beta")
+    psi_draws <- sapply(results, `[[`, "psi")
+    if (!is.matrix(psi_draws)) psi_draws <- matrix(psi_draws, nrow = N)
+    p_draws <- array(NA, dim = c(N, J, K_actual))
+    for (k in seq_len(K_actual)) p_draws[, , k] <- results[[k]]$p
 
-  coef_names <- rownames(beta_samples[[1]])
+    # Pool this round
+    psi_hat <- rowMeans(psi_draws)
+    p_hat   <- apply(p_draws, c(1, 2), mean, na.rm = TRUE)
+    p_hat[is.nan(p_hat)] <- NA
 
-  beta_means <- sapply(beta_samples, function(b) b$mean)
-  beta_vars  <- sapply(beta_samples, function(b) b$sd^2)
-  if (!is.matrix(beta_means)) {
-    beta_means <- matrix(beta_means, nrow = 1)
-    beta_vars  <- matrix(beta_vars, nrow = 1)
-  }
+    if (verbose >= 1) {
+      occ_pooled <- pool_rubins(occ_draws)$mean
+      det_pooled <- pool_rubins(det_draws)$mean
+      cat(sprintf("      Pooled: occ=[%s] det=[%s]\n",
+                  paste(round(occ_pooled, 3), collapse = ", "),
+                  paste(round(det_pooled, 3), collapse = ", ")))
+    }
 
-  pooled_mean <- rowMeans(beta_means)
-  V_within    <- rowMeans(beta_vars)
-  V_between   <- apply(beta_means, 1, var)
-  V_total     <- V_within + (1 + 1/K_actual) * V_between
-  pooled_sd   <- sqrt(V_total)
-
-  summary_fixed <- data.frame(
-    mean    = pooled_mean,
-    sd      = pooled_sd,
-    `0.025quant` = pooled_mean - 1.96 * pooled_sd,
-    `0.5quant`   = pooled_mean,
-    `0.975quant` = pooled_mean + 1.96 * pooled_sd,
-    row.names = coef_names,
-    check.names = FALSE
-  )
-
-  p_hat <- apply(p_samples, c(1, 2), mean, na.rm = TRUE)
-  p_hat[is.nan(p_hat)] <- NA
-
-  if (verbose >= 1) {
-    cat(sprintf("    MI det betas (%d imputations): [%s]\n", K_actual,
-                paste(round(pooled_mean, 3), collapse = ", ")))
+    # Update z_hat for next round
+    current_z_hat <- compute_weights(data$y, psi_hat, p_hat)
   }
 
   list(
-    summary.fixed = summary_fixed,
-    p_hat         = p_hat,
-    beta_samples  = beta_means,
-    K             = K_actual
+    occ_summary = pool_rubins(occ_draws),
+    det_summary = pool_rubins(det_draws),
+    psi_hat     = psi_hat,
+    p_hat       = p_hat,
+    n_iter      = total_K,
+    n_burn      = 0L
   )
 }
 

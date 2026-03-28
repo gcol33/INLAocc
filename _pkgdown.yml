@@ -187,7 +187,25 @@ reference:
 articles:
 - title: Getting Started
   navbar: ~
-  contents: quickstart
+  contents:
+  - quickstart
+  - data-formatting
+- title: Model Types
+  contents:
+  - spatial-models
+  - multi-species
+  - temporal-models
+  - integrated-models
+  - svc-models
+  - random-effects
+- title: Workflows
+  contents:
+  - diagnostics
+  - identifiability
+  - spoccupancy-migration
+- title: Technical Details
+  contents:
+  - algorithm-details
 
 footer:
   structure:

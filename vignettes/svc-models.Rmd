@@ -1,0 +1,511 @@
+---
+title: "Spatially Varying Coefficient Models"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Spatially Varying Coefficient Models}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+HAS_INLA <- requireNamespace("INLA", quietly = TRUE)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  eval = HAS_INLA,
+  cache = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+## Introduction
+
+Standard occupancy models assume that a covariate has the same effect
+everywhere: one slope, applied uniformly across all sites. In practice,
+ecological relationships are often spatially non-stationary. Elevation might
+drive occupancy strongly in one region but have little effect in another. Forest
+cover might be positively associated with occurrence near the range centre but
+negatively associated at range edges where the species is already marginal. When
+a constant-coefficient model is forced onto data with this kind of spatial
+heterogeneity, the global estimate is a compromise that accurately describes no
+region in particular.
+
+Spatially varying coefficient (SVC) models address this by allowing one or more
+covariate effects to change continuously across space. Instead of a single slope
+$\beta_1$, each site $i$ gets its own coefficient $\beta_1(\mathbf{s}_i)$,
+smoothed by a Gaussian spatial process. The global (mean) effect is still
+estimated --- it answers "on average, what is the relationship?" --- but the
+spatial surface of deviations around that mean reveals *where* the relationship
+is stronger, weaker, or reversed.
+
+This vignette covers fitting SVC occupancy models in INLAocc, extracting and
+visualising the varying coefficients, combining SVCs with temporal structure,
+multi-species extensions, and practical guidelines for when SVCs are warranted
+and how to interpret them. For the foundations of spatial occupancy modelling
+(SPDE mesh construction, PC priors, spatial residual checks), see
+`vignette("spatial-models")`. For general model diagnostics and comparison
+tools, see `vignette("diagnostics")`.
+
+
+## The SVC occupancy model
+
+The occupancy submodel with a spatially varying coefficient on one covariate is:
+
+$$\text{logit}(\psi_i) = \beta_0 + \beta_1(\mathbf{s}_i) \cdot x_{1i} + w(\mathbf{s}_i)$$
+
+where the spatially varying slope decomposes as:
+
+$$\beta_1(\mathbf{s}_i) = \bar{\beta}_1 + \tilde{\beta}_1(\mathbf{s}_i)$$
+
+- $\bar{\beta}_1$ is the **global (mean) effect** of $x_1$ across all sites.
+- $\tilde{\beta}_1(\mathbf{s}_i) \sim \text{GP}(0, C_\beta(\cdot))$ is the
+  **spatial deviation** at site $i$, drawn from a Gaussian process with its own
+  Matern covariance function $C_\beta$.
+- $w(\mathbf{s}_i)$ is a **separate spatial random effect** (the intercept
+  spatial field) that captures residual spatial variation in baseline occupancy.
+
+The SVC therefore has two distinct spatial fields: the intercept field
+$w(\mathbf{s}_i)$ and the coefficient field $\tilde{\beta}_1(\mathbf{s}_i)$.
+Each has its own range and variance parameters, controlling how smoothly they
+vary across space and how much variation they carry.
+
+The detection submodel is standard --- no SVC is applied to detection:
+
+$$\text{logit}(p_{ij}) = \mathbf{w}_{ij}^\top \boldsymbol{\alpha}$$
+
+The spatial smoothing via the Gaussian process prevents overfitting to
+individual sites. Sites close together share information about the local
+coefficient value, which is particularly important when per-site sample sizes
+(number of visits) are modest.
+
+
+## Simulating SVC data
+
+```{r simulate-data}
+library(INLAocc)
+
+# Simulate spatial occupancy data (generates a spatial random effect)
+sim <- simulate_occu(N = 300, J = 4,
+                     beta_occ = c(0.5, -0.8),
+                     beta_det = c(0, -0.5),
+                     n_occ_covs = 1, n_det_covs = 1,
+                     spatial_range = 0.3,
+                     seed = 42)
+```
+
+`simulate_occu()` generates a spatial random effect on the intercept but not a
+true SVC. To create data where a covariate effect genuinely varies across space,
+construct the varying coefficient manually:
+
+```{r simulate-svc-manual}
+# Extract site coordinates
+coords <- sim$data$coords
+
+# True SVC: effect of occ_x1 varies with latitude
+# Stronger negative effect in the south, weaker (approaching zero) in the north
+svc_true <- -0.8 + 1.5 * (coords[, 2] - 0.5)
+
+# Verify: effect at southern edge (y = 0) is -0.8 + 1.5*(-0.5) = -1.55
+#          effect at northern edge (y = 1) is -0.8 + 1.5*(0.5)  = -0.05
+range(svc_true)
+```
+
+This gradient --- a covariate that matters strongly in the south but barely at
+all in the north --- is exactly the kind of pattern an SVC model should recover.
+
+
+## Fitting the SVC model
+
+### Spatially varying intercept
+
+The simplest SVC places spatial variation on the intercept itself. This is
+distinct from the standard spatial random effect: the intercept SVC interacts
+with the constant "1" in the design matrix, so it is functionally equivalent to
+a spatial intercept field, but parameterised through the SVC machinery.
+
+```{r fit-svc-intercept}
+fit_svc_int <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                    spatial = sim$data$coords, svc = 1, verbose = 0)
+summary(fit_svc_int)
+```
+
+`svc = 1` means the first occupancy coefficient (the intercept) varies
+spatially. The global intercept $\bar{\beta}_0$ is the spatial mean, and each
+site gets a deviation $\tilde{\beta}_0(\mathbf{s}_i)$.
+
+### Spatially varying slope
+
+More commonly, the goal is to let a covariate's effect vary. Here, the slope of
+`occ_x1` changes across space:
+
+```{r fit-svc-slope}
+fit_svc <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                spatial = sim$data$coords, svc = 2, verbose = 0)
+summary(fit_svc)
+```
+
+`svc = 2` targets the second occupancy coefficient --- the slope of `occ_x1`.
+The model estimates both a global slope $\bar{\beta}_1$ and a spatial surface of
+deviations $\tilde{\beta}_1(\mathbf{s}_i)$.
+
+Reading this output:
+
+- **Global effect of occ_x1**: the mean effect on the logit scale. Across all
+  sites on average, a one-unit increase in `occ_x1` changes log-odds of
+  occupancy by this amount.
+- **Spatial Component**: the intercept spatial field captures residual spatial
+  variation in baseline occupancy after accounting for covariates.
+- **SVC Component**: the coefficient spatial field. The SVC range controls how
+  smoothly the coefficient changes across space (larger range = smoother). The
+  SVC standard deviation measures how much the coefficient varies across space.
+
+### Multiple SVCs
+
+When theory suggests that more than one covariate has a spatially varying
+effect, pass a vector to `svc`:
+
+```{r fit-svc-multi, eval = FALSE}
+fit_svc_multi <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data,
+                      spatial = sim$data$coords, svc = c(1, 2), verbose = 0)
+```
+
+Both the intercept and the `occ_x1` slope vary spatially. Each SVC adds a
+separate spatial field to the model, so computational cost scales with the
+number of SVCs. Use multiple SVCs sparingly and only when each has a clear
+ecological justification.
+
+
+## Extracting SVC surfaces
+
+`getSVCSamples()` returns the posterior summary of the site-level coefficient:
+the total effect $\beta_1(\mathbf{s}_i) = \bar{\beta}_1 + \tilde{\beta}_1(\mathbf{s}_i)$
+at each site.
+
+```{r extract-svc}
+svc_all <- getSVCSamples(fit_svc)
+svc_samples <- svc_all[[1]]  # extract the data.frame for the first SVC covariate
+head(svc_samples)
+```
+
+Each row gives the posterior mean, standard deviation, and 95% credible interval
+for the total effect of `occ_x1` at that site. Sites where the interval
+excludes zero have a "significant" local effect; sites where it spans zero may
+have no local effect even if the global effect is non-zero.
+
+### Visualising the SVC surface
+
+A map of site-level coefficients reveals the spatial pattern:
+
+```{r plot-svc-surface}
+svc_df <- data.frame(
+  x = sim$data$coords[, 1],
+  y = sim$data$coords[, 2],
+  beta1 = svc_samples$mean
+)
+
+# Base R visualisation
+col_idx <- cut(svc_df$beta1, breaks = 100, labels = FALSE)
+plot(svc_df$x, svc_df$y,
+     col = hcl.colors(100, "Blue-Red 3")[col_idx],
+     pch = 19, cex = 1.2,
+     xlab = "Easting", ylab = "Northing",
+     main = "Spatially varying effect of occ_x1")
+```
+
+For publication-quality maps, use `ggplot2`:
+
+```{r plot-svc-ggplot}
+library(ggplot2)
+
+ggplot(svc_df, aes(x = x, y = y, colour = beta1)) +
+  geom_point(size = 2.5) +
+  scale_colour_gradient2(low = "#2166AC", mid = "grey90", high = "#B2182B",
+                         midpoint = 0, name = expression(beta[1](s))) +
+  coord_equal() +
+  labs(title = "Spatially varying effect of occ_x1",
+       x = "Easting", y = "Northing") +
+  theme_minimal(base_size = 13)
+```
+
+### Mapping uncertainty
+
+The posterior standard deviation reveals where the SVC is well-estimated versus
+uncertain:
+
+```{r plot-svc-uncertainty}
+svc_df$sd <- svc_samples$sd
+
+ggplot(svc_df, aes(x = x, y = y, colour = sd)) +
+  geom_point(size = 2.5) +
+  scale_colour_viridis_c(option = "magma", name = "Posterior SD") +
+  coord_equal() +
+  labs(title = "Uncertainty in spatially varying effect",
+       x = "Easting", y = "Northing") +
+  theme_minimal(base_size = 13)
+```
+
+Regions with few sites or low detection probability will have wider credible
+intervals. If the uncertainty map shows uniformly high SD, the data may not
+support an SVC --- consider dropping back to a constant coefficient.
+
+### Posterior predictive check
+
+Verify model adequacy after fitting the SVC:
+
+```{r ppc-svc}
+ppc <- ppcOccu(fit_svc, fit.stat = "freeman-tukey", group = 1)
+ppc$bayesian.p
+```
+
+A Bayesian p-value near 0.5 confirms that the SVC model generates data consistent with observations.
+
+### Parameter recovery
+
+When working with simulated data, compare the estimated SVC surface against the known truth:
+
+```{r recovery-svc}
+# Correlation between true and estimated site-level coefficients
+cor(svc_true, svc_samples$mean)
+```
+
+A high correlation between the true spatially varying coefficient and the estimated surface indicates good recovery. The correlation will not be 1.0 because: (a) estimation uncertainty at each site, (b) the Gaussian process smooths over sharp local variation, and (c) the SPDE mesh approximation introduces discretisation error. With more sites or higher detection probability, the recovery improves.
+
+
+## Model comparison: SVC vs. constant coefficient
+
+An SVC should only be retained if it meaningfully improves model fit. Always
+compare against simpler alternatives:
+
+```{r model-comparison}
+# Baseline: no spatial effect
+m_base <- occu(~ occ_x1, ~ det_x1, data = sim$data, verbose = 0)
+
+# Spatial intercept only (no SVC)
+m_spatial <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                  spatial = sim$data$coords, verbose = 0)
+
+# SVC on intercept
+m_svc_int <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                  spatial = sim$data$coords, svc = 1, verbose = 0)
+
+# SVC on occ_x1 slope
+m_svc_slope <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                    spatial = sim$data$coords, svc = 2, verbose = 0)
+
+compare_models(base = m_base,
+               spatial = m_spatial,
+               svc_int = m_svc_int,
+               svc_slope = m_svc_slope,
+               criterion = "waic")
+```
+
+Interpretation:
+
+- **base to spatial**: a WAIC improvement confirms spatial structure matters.
+- **spatial to svc_int**: any improvement indicates spatial variation in
+  baseline occupancy beyond what the standard spatial field captures.
+- **spatial to svc_slope**: a substantial improvement indicates the effect of
+  `occ_x1` genuinely varies across space.
+
+If the SVC model does not improve WAIC over the spatial intercept model, the
+constant coefficient is sufficient and the additional complexity is not
+justified. A spatially varying intercept captures spatial variation in *baseline*
+occupancy. An SVC on a slope captures spatial variation in *how the covariate
+affects occupancy*. These are different ecological hypotheses --- compare them
+explicitly rather than assuming one subsumes the other.
+
+
+## Prediction at new locations
+
+SVC predictions at unsampled sites incorporate the spatially varying coefficient. Pass new coordinates and covariates to `predict_spatial()`:
+
+```{r predict-svc}
+new_coords <- as.matrix(expand.grid(x = seq(0, 1, by = 0.05),
+                                     y = seq(0, 1, by = 0.05)))
+new_covs <- data.frame(occ_x1 = 0)
+
+preds <- predict_spatial(fit_svc, newcoords = new_coords,
+                         newocc.covs = new_covs)
+head(preds)
+```
+
+The predictions reflect both the spatial intercept field and the SVC. Even with `occ_x1` held at 0, occupancy varies across space because of the intercept spatial field. To see the SVC's contribution, compare predictions at `occ_x1 = 0` vs `occ_x1 = 1` across the same grid --- the difference will vary spatially, which is the SVC in action.
+
+
+## SVC + temporal models
+
+For multi-season data where the covariate effect might vary in space but the
+temporal dynamics also matter, combine SVC with temporal structure:
+
+```{r fit-svc-temporal}
+sim_t <- simTOcc(N = 100, J = 3, n_seasons = 5, seed = 300)
+
+fit_svc_t <- occu(~ occ_x1, ~ det_x1, data = sim_t$data,
+                  spatial = sim_t$data$coords,
+                  temporal = "ar1", svc = 2, verbose = 0)
+summary(fit_svc_t)
+```
+
+This model combines AR(1) temporal autocorrelation with a spatially varying
+slope on `occ_x1`. The SVC captures spatial non-stationarity in the
+covariate--occupancy relationship, while the AR(1) component captures temporal
+persistence in occupancy states. This is the most complex single-species model
+available in INLAocc and should be used only when both spatial non-stationarity
+and temporal autocorrelation are ecologically plausible.
+
+A sensible workflow is to first establish whether the SVC is warranted using
+spatial-only models, then add temporal structure to the preferred spatial
+specification. Do not add both simultaneously on a first attempt --- it becomes
+difficult to diagnose which component is absorbing which signal.
+
+
+## Multi-species SVC
+
+When multiple species are surveyed at the same sites, each species can have its
+own spatially varying coefficient:
+
+```{r fit-ms-svc, eval = FALSE}
+sim_ms <- simMsOcc(N = 200, J = 4, n_species = 5,
+                   spatial_range = 0.3, seed = 123)
+
+fit_ms_svc <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data,
+                   multispecies = TRUE,
+                   spatial = sim_ms$data$coords, svc = 2, verbose = 0)
+```
+
+Each species gets its own SVC field --- the effect of `occ_x1` varies spatially
+*and* differs across species. A generalist might show a flat SVC (constant
+effect everywhere), while a specialist might show strong spatial variation. The
+species-level SVC surfaces from `getSVCSamples()` can be compared to understand
+how species respond differently to the same environmental gradient across space.
+
+This is computationally demanding: each species adds a separate spatial field.
+With 5 species and `svc = 2`, the model estimates 5 SVC fields plus 5 intercept
+spatial fields (10 spatial fields total). Use only with adequate sample sizes
+(200+ sites, 3+ visits per site per species).
+
+
+## Practical guidelines for interpretation
+
+### Don't assign SVCs arbitrarily
+
+SVCs should reflect a specific ecological hypothesis: "the effect of $X$ varies
+across space because of [mechanism]." Plausible mechanisms include:
+
+- **Local adaptation**: species respond differently to a resource in different
+  parts of their range.
+- **Interaction with an unmeasured gradient**: temperature modulates the effect
+  of precipitation, and temperature varies spatially.
+- **Range boundary effects**: a habitat covariate matters more at the range edge
+  where the species is at its physiological limit.
+
+Without a mechanistic rationale, an SVC may be overfitting to noise or absorbing
+the signal of an omitted covariate.
+
+### Start simple, compare up
+
+The recommended workflow for deciding whether an SVC is needed:
+
+1. Fit the model without any spatial effect.
+2. Add a spatial intercept (captures unmeasured spatial variation in baseline
+   occupancy).
+3. Add an SVC on the hypothesised covariate.
+4. Compare all three via WAIC using `compare_models()`.
+
+If the SVC does not improve on the spatial intercept model, the covariate effect
+is likely constant across space, and the simpler model should be preferred.
+
+### Visualise the SVC surface
+
+Always map the site-level coefficient estimates. Diagnostic patterns to look
+for:
+
+- **Smooth gradients**: likely real ecological non-stationarity (e.g., a
+  temperature effect that varies with latitude). This is the ideal case ---
+  the SVC is capturing a genuine spatial process.
+- **Patchy or noisy pattern**: possibly overfitting, or confounding with another
+  spatially structured process. Consider whether an omitted covariate could
+  explain the pattern.
+- **Sign changes**: the covariate has opposite effects in different regions.
+  This can be ecologically meaningful (positive effect at range centre, negative
+  at range edge) or a sign of confounding. Investigate carefully before
+  reporting.
+- **Uniform surface with high uncertainty**: the data do not support an SVC.
+  The constant-coefficient model is sufficient.
+
+### Consider the spatial scale
+
+The SVC range parameter controls how smoothly the coefficient varies. Its
+relationship to the study extent determines what the model can resolve:
+\vspace{0.5em}
+
+- **SVC range >> study extent**: the effect is nearly constant across the study
+  area. The SVC is not needed; a fixed coefficient suffices.
+- **SVC range << inter-site distance**: the spatial process varies faster than
+  the sampling can resolve. Site-level estimates will be noisy and poorly
+  constrained.
+- **SVC range $\approx$ study extent / 5--10**: the ideal regime. The spatial
+  variation is smooth enough to estimate with reasonable precision but fast
+  enough to reveal meaningful heterogeneity.
+
+If the posterior for SVC range piles up against the upper boundary of the prior,
+it is signalling that the effect is effectively constant. If it piles up near
+zero, the data may be too sparse to support an SVC.
+
+### Prior sensitivity
+
+SVC spatial variance and range priors matter more than in standard spatial
+models, because the SVC field competes with the intercept spatial field for
+signal. The default PC (penalised complexity) priors in INLAocc are calibrated
+to shrink toward the constant-coefficient model (i.e., zero SVC variance). This
+is conservative by design: the SVC must earn its complexity by improving the
+marginal likelihood.
+
+If results are sensitive to the choice of PC prior parameters, the data are
+likely marginal for supporting an SVC. Report the sensitivity analysis alongside
+the primary results.
+
+### Identifiability concerns
+
+With both an intercept spatial field $w(\mathbf{s}_i)$ and an SVC field
+$\tilde{\beta}_1(\mathbf{s}_i)$, the model has two spatial processes that can
+partially trade off against each other. This trade-off becomes problematic when:
+
+- The SVC covariate $x_1$ is itself spatially structured (e.g., elevation,
+  which varies smoothly across space). The intercept field and the SVC field
+  may both try to capture the same spatial signal, leading to poorly identified
+  variance components.
+- The data are sparse relative to the spatial scale of variation. Few sites
+  means few data points to separate the two spatial processes.
+
+Use `checkIdentifiability()` to flag potential issues:
+
+```{r check-identifiability}
+checkIdentifiability(fit_svc)
+```
+
+If identifiability warnings appear, consider whether the SVC covariate is too
+collinear with the spatial structure of the data. Options include:
+residualising the covariate against a spatial smooth before fitting, using
+stronger PC priors to regularise the SVC, or accepting the spatial intercept
+model and reporting the global coefficient only.
+
+
+## Summary
+
+- SVCs decompose a covariate effect into a global mean plus a spatial surface of
+  deviations. They answer "where does this relationship hold, and where does it
+  break down?"
+- Fit with `occu(..., spatial = coords, svc = k)` where `k` indexes the
+  occupancy covariate. Extract surfaces with `getSVCSamples()`.
+- SVCs are the most complex single-species model in INLAocc. Use only with
+  ecological justification and adequate sample size (200+ sites).
+- Always compare to simpler alternatives: no spatial effect, spatial intercept
+  only, constant coefficient with spatial intercept.
+- Visualise the SVC surface. If it looks like noise, it probably is.
+- SVC + temporal is slow. Establish that the SVC is warranted in a
+  spatial-only model before adding temporal structure.
+- Prior sensitivity and identifiability checks are essential, not optional.

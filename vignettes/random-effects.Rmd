@@ -1,0 +1,436 @@
+---
+title: "Random Effects in Occupancy Models"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Random Effects in Occupancy Models}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+HAS_INLA <- requireNamespace("INLA", quietly = TRUE)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  eval = HAS_INLA,
+  cache = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+## Introduction
+
+Ecological survey data are almost always grouped. Sites are clustered within
+regions, visits are conducted by different observers, and species detections
+depend on local conditions that vary across spatial or administrative units.
+When these groups share unmeasured characteristics that affect occupancy or
+detection, ignoring the grouping structure leads to underestimated uncertainty
+and, in some cases, biased parameter estimates. Random effects provide a
+principled way to account for this structure.
+
+A random effect allows intercepts or slopes to vary across groups while
+borrowing strength through partial pooling. Instead of estimating a completely
+separate parameter for each group (fixed effects, which is wasteful with many
+groups) or ignoring groups entirely (which is wrong when they matter), the
+random effects model assumes group-level deviations are drawn from a common
+distribution. Groups with little data are pulled toward the overall mean; groups
+with abundant data are allowed to deviate more freely. This shrinkage is
+automatic and data-driven.
+
+INLAocc supports random effects in both the occupancy and detection sub-models.
+The formula interface follows the same syntax as lme4 and glmmTMB:
+`(1 | group)` for random intercepts, `(x | group)` for correlated random
+slopes, `(x || group)` for uncorrelated slopes, and `(1 | a/b)` for nested
+grouping. For finer control, the `occu_re()` function allows explicit
+specification of the latent model and prior. All random effects are estimated
+via INLA using penalised complexity (PC) priors that shrink toward the base
+model (no random effect) unless the data provide evidence otherwise.
+
+
+## The random effects model
+
+### Random intercept
+
+The standard occupancy model with a random intercept on the occupancy process
+is:
+
+$$
+\text{logit}(\psi_i) = \mathbf{x}_i^\top \boldsymbol{\beta} + u_{g[i]}, \quad u_g \stackrel{iid}{\sim} \mathcal{N}(0, \sigma^2_u)
+$$
+
+where $g[i]$ maps site $i$ to its group (e.g., region, management unit, or
+observer). The random effect $u_g$ shifts the baseline log-odds of occupancy
+up or down for each group. With many groups, the individual $u_g$ estimates
+are shrunk toward zero (the overall mean on the link scale), which is the
+partial pooling property.
+
+### Random slope
+
+When the effect of a covariate varies across groups, the model becomes:
+
+$$
+\text{logit}(\psi_i) = \beta_0 + (\beta_1 + v_{g[i]}) x_{1i}, \quad v_g \stackrel{iid}{\sim} \mathcal{N}(0, \sigma^2_v)
+$$
+
+Here, $\beta_1$ is the average effect of $x_1$ across all groups, and $v_g$
+captures group-specific deviations from that average. A large $\sigma^2_v$
+means the covariate effect varies substantially across groups; a small
+$\sigma^2_v$ means it is approximately constant.
+
+
+## Simulating data with random effects
+
+INLAocc's `simulate_occu()` generates site-level random effects. To create
+grouped data suitable for demonstrating random intercepts, we simulate the data
+and then assign sites to groups:
+
+```{r simulate}
+library(INLAocc)
+
+sim <- simulate_occu(
+  N = 300, J = 4,
+  beta_occ = c(0.5, -0.8),
+  beta_det = c(0, -0.5),
+  n_occ_covs = 1, n_det_covs = 1,
+  random_occ_sd = 1.0,
+  seed = 42
+)
+
+# Assign sites to 10 groups
+n_groups <- 10
+sim$data$occ.covs$group <- rep(seq_len(n_groups), length.out = 300)
+```
+
+The true random effect standard deviation is 1.0, which is substantial ---
+on the logit scale, a shift of $\pm 1$ moves occupancy probability from 0.62
+to 0.27 or 0.73 when the baseline is at 0.5.
+
+Explore the data to confirm the group structure:
+
+```{r explore}
+table(sim$data$occ.covs$group)
+```
+
+
+## Random intercepts
+
+### Formula syntax
+
+Random intercepts use the `(1 | group)` syntax inside the occupancy or
+detection formula, exactly as in lme4:
+
+```{r fit-re}
+fit_re <- occu(~ occ_x1 + (1 | group), ~ det_x1, data = sim$data, verbose = 0)
+summary(fit_re)
+```
+
+The summary includes a hyperparameters section reporting the precision of each
+random effect. Precision is the inverse of variance: $\tau = 1 / \sigma^2$.
+The estimated precision should imply a standard deviation close to the true
+value of 1.0. High precision means little between-group variation; low
+precision means groups differ substantially.
+
+### Extracting random effects
+
+The `ranef()` method extracts posterior summaries of the group-level deviations:
+
+```{r ranef}
+re <- ranef(fit_re)
+re$occupancy
+```
+
+A positive random effect means that group has higher occupancy than the overall
+average (after accounting for covariates); a negative value means lower
+occupancy. These are analogous to BLUPs (best linear unbiased predictors) in
+the frequentist mixed model literature, though in the Bayesian framework they
+are full posterior distributions.
+
+### Comparison: with vs. without random effects
+
+Model comparison via WAIC confirms whether the grouping structure matters:
+
+```{r compare}
+fit_no_re <- occu(~ occ_x1, ~ det_x1, data = sim$data, verbose = 0)
+compare_models(no_re = fit_no_re, with_re = fit_re, criterion = "waic")
+```
+
+When the grouping structure is real, the model with random effects typically has
+a substantially lower WAIC. The effective number of parameters (`p_waic`)
+increases modestly because partial pooling keeps the random effects from
+consuming a full degree of freedom per group.
+
+
+## Random slopes
+
+### Correlated slopes: `(x | group)`
+
+When both the intercept and a covariate slope vary by group, and these two
+sources of variation may be correlated, use:
+
+```{r slope-corr, eval = FALSE}
+fit_slope <- occu(~ occ_x1 + (occ_x1 | group), ~ det_x1, data = sim$data, verbose = 0)
+```
+
+This specifies the joint model:
+
+$$
+\begin{pmatrix} u_g \\ v_g \end{pmatrix} \sim \mathcal{N}\left(\mathbf{0}, \begin{pmatrix} \sigma^2_u & \rho \sigma_u \sigma_v \\ \rho \sigma_u \sigma_v & \sigma^2_v \end{pmatrix}\right)
+$$
+
+where $u_g$ is the random intercept and $v_g$ the random slope for group $g$.
+A negative correlation ($\rho < 0$) would mean that groups with high baseline
+occupancy tend to have a weaker covariate effect, and vice versa.
+
+### Uncorrelated slopes: `(x || group)`
+
+If you do not expect --- or cannot estimate --- the correlation between intercept
+and slope variation, use the double-bar syntax:
+
+```{r slope-uncorr, eval = FALSE}
+fit_slope_uncor <- occu(~ occ_x1 + (occ_x1 || group), ~ det_x1, data = sim$data, verbose = 0)
+```
+
+This fits independent random intercepts and random slopes (i.e., $\rho = 0$
+by construction). The uncorrelated specification is computationally simpler and
+requires fewer data to estimate reliably. In practice, if you have fewer than
+about 20 groups, the correlation parameter is often poorly identified and the
+uncorrelated model is the safer choice.
+
+
+## Nested random effects
+
+When sites are nested within higher-level units (e.g., plots within regions),
+the formula syntax supports nested grouping with `/`:
+
+```{r nested, eval = FALSE}
+# Create a nested structure
+sim$data$occ.covs$region <- rep(1:3, each = 100)
+sim$data$occ.covs$site_id <- seq_len(300)
+
+fit_nested <- occu(~ occ_x1 + (1 | region/site_id), ~ det_x1,
+                   data = sim$data, verbose = 0)
+```
+
+The syntax `(1 | region/site_id)` expands internally to
+`(1 | region) + (1 | region:site_id)`, fitting two variance components: one for
+between-region variation and one for within-region, between-site variation. This
+is the standard nested random effects parameterisation used in lme4.
+
+
+## Detection random effects
+
+Random effects on the detection process handle variation in observer skill,
+survey conditions across time periods, or equipment differences:
+
+```{r det-re, eval = FALSE}
+# Simulate observer IDs (5 observers, assigned randomly to visits)
+sim$data$det.covs$observer <- matrix(
+  sample(1:5, 300 * 4, replace = TRUE), nrow = 300, ncol = 4
+)
+
+fit_det_re <- occu(~ occ_x1, ~ det_x1 + (1 | observer), data = sim$data, verbose = 0)
+```
+
+Extract detection-level random effects with:
+
+```{r det-ranef, eval = FALSE}
+ranef(fit_det_re, process = "detection")
+```
+
+Observers with positive random effects have higher detection rates; those with
+negative values have lower rates. Accounting for observer heterogeneity prevents
+it from being absorbed into the occupancy estimates, which would bias the
+ecological conclusions.
+
+
+## Using `occu_re()` for explicit specification
+
+The formula syntax covers the most common cases. When you need more control ---
+a non-default latent model, a custom prior, or a sum-to-zero constraint ---
+use `occu_re()` directly and pass the result to the `occ.re` or `det.re`
+argument of `occu()`:
+
+```{r occu-re, eval = FALSE}
+re_spec <- occu_re(
+  type  = "intercept",
+  group = "group",
+  model = "iid",
+  prior = list(prec = list(prior = "pc.prec", param = c(1, 0.05)))
+)
+
+fit_explicit <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                     occ.re = re_spec, verbose = 0)
+```
+
+The `model` argument accepts any INLA latent model name. For standard random
+intercepts, `"iid"` (independent and identically distributed) is the default.
+When groups have a natural ordering (e.g., years, age classes), structured
+models are available:
+
+- `"iid"` --- exchangeable (default). No ordering assumed.
+- `"ar1"` --- first-order autoregressive. Adjacent groups are correlated.
+- `"rw1"` --- random walk of order 1. Smooth trend across ordered groups.
+- `"rw2"` --- random walk of order 2. Smoother than rw1.
+
+```{r ar1, eval = FALSE}
+# Temporal random effect with AR(1) structure
+sim$data$occ.covs$year <- rep(2010:2019, each = 30)
+
+re_temporal <- occu_re(
+  type  = "intercept",
+  group = "year",
+  model = "ar1",
+  prior = list(prec = list(prior = "pc.prec", param = c(1, 0.05)))
+)
+
+fit_temporal <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                     occ.re = re_temporal, verbose = 0)
+```
+
+
+## Priors on random effects
+
+### Default PC prior
+
+INLAocc uses penalised complexity (PC) priors for random effect precision by
+default. The default is `P(sigma > 1) = 0.05`, meaning there is a 5% prior
+probability that the standard deviation exceeds 1 on the linear predictor
+(logit) scale. This is moderately conservative: it encodes a prior belief that
+the random effect is unlikely to dominate the linear predictor, while remaining
+flexible enough to let the data speak.
+
+### Adjusting the prior
+
+When the default is too tight or too loose, specify a custom prior through
+`occu_re()`:
+
+```{r priors}
+# More permissive: P(sigma > 2) = 0.1
+re_loose <- occu_re(
+  type  = "intercept",
+  group = "group",
+  prior = list(prec = list(prior = "pc.prec", param = c(2, 0.1)))
+)
+
+# Tighter: P(sigma > 0.5) = 0.01
+re_tight <- occu_re(
+  type  = "intercept",
+  group = "group",
+  prior = list(prec = list(prior = "pc.prec", param = c(0.5, 0.01)))
+)
+```
+
+Situations where adjusting the prior matters:
+
+- **Few groups (<5).** The data alone cannot pin down the variance well. The
+  prior has outsized influence, so ensure it reflects genuine prior knowledge.
+- **Many sites per group (>100).** The likelihood dominates; the prior matters
+  less. A wider prior is safe.
+- **Strong prior knowledge.** If previous studies consistently report small
+  between-region variation, a tighter prior is justified and improves
+  estimation.
+- **Covariates on different scales.** If covariates are not standardised, a
+  random slope prior of $\sigma = 1$ might be too permissive or too tight
+  depending on the covariate's range. Standardise covariates first, or adjust
+  the prior to match.
+
+
+## How many groups do you need?
+
+Practical guidance for the number of groups:
+
+| Groups   | Recommendation |
+|----------|---------------------------------------------------------------|
+| < 3      | Use fixed effects. Not enough groups to estimate a variance.  |
+| 3--5     | Random effects are possible but the variance estimate will be noisy. Consider fixed effects unless partial pooling is specifically desired. |
+| 5--20    | The sweet spot for random intercepts. Enough groups for reliable variance estimation; partial pooling provides clear benefits. |
+| > 20     | Well-estimated. Can support random slopes and correlated structures. |
+
+With few groups, the individual group-level estimates (the $u_g$) are still
+partially pooled, which can be useful. But the variance parameter $\sigma^2$
+itself is weakly identified, meaning it is sensitive to the prior and its
+posterior is wide. With 3--5 groups, always conduct a sensitivity analysis by
+fitting the model under two or three different priors and checking whether
+conclusions change.
+
+
+## Diagnostics for random effects
+
+### Overall model check
+
+```{r diagnostics}
+checkModel(fit_re)
+```
+
+The `checkModel()` function runs a suite of posterior predictive checks. For
+models with random effects, it verifies that the random effect structure
+adequately captures the between-group variation. See `vignette("diagnostics")`
+for a detailed walkthrough.
+
+### Dispersion
+
+Overdispersion in occupancy models often signals unmodelled heterogeneity. A
+random effect can absorb this extra variation:
+
+```{r dispersion}
+testDispersion(fit_no_re)  # may show overdispersion
+testDispersion(fit_re)     # RE should reduce it
+```
+
+If overdispersion persists after adding random effects, the grouping structure
+may not capture the relevant source of heterogeneity, or additional covariates
+may be needed.
+
+### Identifiability
+
+When random effects are complex (crossed random slopes, nested structures),
+check that all components are identifiable:
+
+```{r identifiability}
+checkIdentifiability(fit_re)
+```
+
+This function flags random effect terms whose posterior variance is dominated
+by the prior, indicating that the data provide little information about that
+component.
+
+
+## Practical guidance
+
+1. **Start simple.** Fit the model without random effects first. Add them only
+   if diagnostics (dispersion, residual patterns by group) suggest grouped
+   variation that covariates do not capture.
+
+2. **Scale continuous covariates.** Before fitting random slopes, centre and
+   scale all continuous covariates. This stabilises estimation and makes the
+   prior on the slope variance interpretable.
+
+3. **Keep detection simple.** Random slopes on detection are rarely needed and
+   are difficult to identify. Start with random intercepts if observer or
+   temporal variation in detection is suspected.
+
+4. **Prefer uncorrelated slopes when groups are few.** The correlation between
+   random intercept and slope (`(x | group)`) requires substantial data to
+   estimate. With fewer than 20 groups, `(x || group)` is usually the safer
+   choice.
+
+5. **Use structured models for ordered groups.** If your grouping factor has a
+   natural ordering (years, age classes, elevation bands), an `"ar1"` or
+   `"rw1"` model in `occu_re()` is more efficient than `"iid"` because it
+   borrows strength from neighbouring groups.
+
+6. **Convergence issues.** If the EM algorithm is slow to converge with random
+   effects, try: (a) reducing model complexity (drop correlated slopes),
+   (b) increasing damping (`damping = 0.5`), or (c) providing more informative
+   priors on the random effect precision.
+
+7. **Report both fixed and random.** When presenting results, report the fixed
+   effect coefficients, the random effect variance ($\sigma^2$ or its posterior
+   summary), and --- if relevant --- the group-level predictions from `ranef()`.
+
+For the general model-fitting workflow, see `vignette("quickstart")`. For
+spatial random effects (continuous Gaussian random fields rather than discrete
+groups), see `vignette("spatial-models")`.

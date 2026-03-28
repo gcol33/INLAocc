@@ -73,10 +73,10 @@ summary.occu_inla <- function(object, level = NULL,
     cat("--- Model Fit ---\n")
     cat(sprintf("Marginal log-likelihood: %.2f\n",
                 tail(object$history, 1)[[1]]$loglik))
-    if (!is.null(object$occ_fit$waic))
-      cat(sprintf("WAIC (occupancy):  %.2f\n", object$occ_fit$waic$waic))
-    if (!is.null(object$det_fit$waic))
-      cat(sprintf("WAIC (detection):  %.2f\n", object$det_fit$waic$waic))
+    waic_val <- tryCatch(compute_bernoulli_waic(object, n_samples = 200L)$waic,
+                         error = function(e) NULL)
+    if (!is.null(waic_val))
+      cat(sprintf("WAIC:  %.2f\n", waic_val))
 
     cat(sprintf("\nEstimated occupancy: %.3f (%.3f - %.3f)\n",
                 mean(object$psi_hat),
@@ -248,12 +248,18 @@ summary.occu_inla_ms <- function(object, ...) {
   # Community-level effects
   if (!is.null(object$community_occ)) {
     cat("\n--- Community-Level Occupancy Effects ---\n")
-    print(round(object$community_occ, 4), row.names = FALSE)
+    tmp <- object$community_occ
+    num_cols <- sapply(tmp, is.numeric)
+    tmp[num_cols] <- lapply(tmp[num_cols], round, 4)
+    print(tmp, row.names = FALSE)
   }
 
   if (!is.null(object$community_det)) {
     cat("\n--- Community-Level Detection Effects ---\n")
-    print(round(object$community_det, 4), row.names = FALSE)
+    tmp <- object$community_det
+    num_cols <- sapply(tmp, is.numeric)
+    tmp[num_cols] <- lapply(tmp[num_cols], round, 4)
+    print(tmp, row.names = FALSE)
   }
 
   invisible(object)
@@ -497,26 +503,38 @@ summary.occu_inla_temporal <- function(object, ...) {
   cat(sprintf("Periods: %d | Sites: %d | AR(1): %s\n\n",
               object$n_periods, N, object$ar1))
 
+  cat(sprintf("EM iterations: %d | Converged: %s\n\n",
+              object$n_iter %||% NA_integer_,
+              object$converged %||% NA))
+
   period_table <- data.frame(
-    period    = seq_len(object$n_periods),
-    est_psi   = NA_real_,
-    est_p     = NA_real_,
-    n_iter    = NA_integer_,
-    converged = NA
+    period  = seq_len(object$n_periods),
+    est_psi = NA_real_,
+    est_p   = NA_real_
   )
 
   for (t in seq_len(object$n_periods)) {
-    fit <- object$period_fits[[t]]
-    if (!is.null(fit)) {
-      period_table$est_psi[t]   <- mean(fit$psi_hat)
-      period_table$est_p[t]     <- mean(fit$p_hat, na.rm = TRUE)
-      period_table$n_iter[t]    <- fit$n_iter
-      period_table$converged[t] <- fit$converged
+    pfit <- object$period_fits[[t]]
+    if (!is.null(pfit)) {
+      period_table$est_psi[t] <- mean(pfit$psi_hat)
+      period_table$est_p[t]   <- mean(pfit$p_hat, na.rm = TRUE)
     }
   }
 
-  cat("--- Per-Period Summary ---\n")
-  print(period_table, row.names = FALSE)
+  # Fixed effects from the joint occupancy INLA fit
+  if (!is.null(object$occ_fit) && !is.null(object$occ_fit$summary.fixed)) {
+    cat("--- Occupancy (psi) ---\n")
+    print(round(object$occ_fit$summary.fixed, 4))
+  }
+
+  # AR(1) hyperparameters
+  if (!is.null(object$occ_fit) && !is.null(object$occ_fit$summary.hyperpar)) {
+    cat("\n--- Temporal Component ---\n")
+    print(round(object$occ_fit$summary.hyperpar, 4))
+  }
+
+  cat("\n--- Per-Period Summary ---\n")
+  print(round(period_table, 3), row.names = FALSE)
 
   if (!is.null(object$psi_smoothed)) {
     cat(sprintf("\nAR(1)-smoothed occupancy range: %.3f - %.3f\n",
@@ -920,6 +938,26 @@ logLik.occu_inla <- function(object, ...) {
 }
 
 
+#' @rdname logLik.occu_inla
+#' @export
+logLik.occu_inla_temporal <- function(object, ...) {
+  ll <- NA_real_
+  if (!is.null(object$history) && length(object$history) > 0) {
+    last <- object$history[[length(object$history)]]
+    if (!is.null(last$loglik)) ll <- last$loglik
+  }
+  n_occ <- nrow(object$occ_fit$summary.fixed)
+  # Sum detection params across periods
+  n_det <- sum(vapply(object$period_fits, function(pf) {
+    if (!is.null(pf$det_fit)) nrow(pf$det_fit$summary.fixed) else 0L
+  }, integer(1)))
+  if (n_det == 0L) n_det <- 2L  # fallback
+  df <- n_occ + n_det
+  N <- if (!is.null(object$psi_mat)) nrow(object$psi_mat) else object$data_list[[1]]$N
+  structure(ll, df = df, nobs = N * object$n_periods, class = "logLik")
+}
+
+
 #' Glance at model-level statistics
 #'
 #' Returns a single-row data.frame of model-level summaries, similar to
@@ -939,10 +977,9 @@ glance.occu_inla <- function(x, ...) {
     if (!is.null(last$loglik)) ll <- last$loglik
   }
 
-  waic_occ <- if (!is.null(x$occ_fit$waic)) x$occ_fit$waic$waic else NA_real_
-  waic_det <- if (!is.null(x$det_fit$waic)) x$det_fit$waic$waic else NA_real_
-  waic_total <- sum(waic_occ, waic_det, na.rm = TRUE)
-  if (is.na(waic_occ) && is.na(waic_det)) waic_total <- NA_real_
+  # Compute WAIC on observation (Bernoulli) scale
+  waic_total <- tryCatch(compute_bernoulli_waic(x, n_samples = 200L)$waic,
+                         error = function(e) NA_real_)
 
   data.frame(
     nobs       = sum(!is.na(x$data$y)),
@@ -996,10 +1033,10 @@ compare_models <- function(..., criterion = c("waic", "aic", "bic")) {
     comp$AIC[i]    <- -2 * as.numeric(ll) + 2 * comp$df[i]
     comp$BIC[i]    <- -2 * as.numeric(ll) + log(n_obs) * comp$df[i]
 
-    occ_w <- if (!is.null(m$occ_fit$waic)) m$occ_fit$waic$waic else NA_real_
-    det_w <- if (!is.null(m$det_fit$waic)) m$det_fit$waic$waic else NA_real_
-    comp$WAIC[i] <- sum(occ_w, det_w, na.rm = TRUE)
-    if (is.na(occ_w) && is.na(det_w)) comp$WAIC[i] <- NA_real_
+    comp$WAIC[i] <- tryCatch(
+      compute_bernoulli_waic(m, n_samples = 200L)$waic,
+      error = function(e) NA_real_
+    )
 
     comp$n_iter[i]    <- m$n_iter
     comp$converged[i] <- m$converged

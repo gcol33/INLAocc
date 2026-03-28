@@ -3,7 +3,7 @@
 # Requires INLAocc to be installed (not just load_all'd)
 # =============================================================================
 
-library(INLAocc)
+devtools::load_all("C:/Users/Gilles Colling/Documents/dev/INLAocc")
 library(spOccupancy)
 
 n_cores <- min(parallel::detectCores(logical = FALSE), 10L)
@@ -20,7 +20,7 @@ ms <- ms[ms$type != "Multi-species (parallel)", ]
 n_species <- 10L
 J <- 4L
 
-for (N in c(1000, 3000, 10000)) {
+for (N in c(100, 300, 1000, 3000, 10000)) {
   cat(sprintf("\nN = %d, S = %d, cores = %d\n", N, n_species, n_cores))
 
   sim <- INLAocc::simMsOcc(N = N, J = J, n_species = n_species,

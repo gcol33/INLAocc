@@ -79,6 +79,7 @@ occu <- function(occ.formula, det.formula = NULL, data,
                  max.iter     = 50L,
                  tol          = 1e-4,
                  damping      = 0.3,
+                 correction   = "auto",
                  ensemble     = FALSE,
                  num.threads  = "1:1",
                  k.fold       = 0L,
@@ -123,7 +124,14 @@ occu <- function(occ.formula, det.formula = NULL, data,
     priors <- do.call(occu_priors, priors)
   }
 
-  # --- 6. Build common args ---
+  # --- 6. Validate correction ---
+  valid_corrections <- c("auto", "mi", "gibbs", "none")
+  if (!correction %in% valid_corrections) {
+    stop(sprintf("correction must be one of [%s], got '%s'",
+                 paste(valid_corrections, collapse = ", "), correction))
+  }
+
+  # --- 7. Build common args ---
   args <- list(
     data        = data,
     occ_parsed  = occ_parsed,
@@ -138,6 +146,7 @@ occu <- function(occ.formula, det.formula = NULL, data,
     max.iter    = max.iter,
     tol         = tol,
     damping     = damping,
+    correction  = correction,
     ensemble    = ensemble,
     num.threads = num.threads,
     k.fold      = k.fold,

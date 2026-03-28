@@ -2,9 +2,12 @@
 % Please edit documentation in R/occu_output.R
 \name{logLik.occu_inla}
 \alias{logLik.occu_inla}
+\alias{logLik.occu_inla_temporal}
 \title{Extract log-likelihood}
 \usage{
 \method{logLik}{occu_inla}(object, ...)
+
+\method{logLik}{occu_inla_temporal}(object, ...)
 }
 \arguments{
 \item{object}{fitted occu_inla object}

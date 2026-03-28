@@ -1,0 +1,534 @@
+---
+title: "Diagnostics & Model Selection"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Diagnostics & Model Selection}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+HAS_INLA <- requireNamespace("INLA", quietly = TRUE)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  eval = HAS_INLA,
+  cache = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+## Introduction
+
+Occupancy models simultaneously estimate two processes: occupancy (is a
+species present at a site?) and detection (given presence, is it observed on
+a given visit?). This dual-process structure makes diagnostics both essential
+and non-trivial. Misspecification in either the occupancy or detection
+submodel can bias parameters in *both* submodels, because the likelihood
+entangles the two. Traditional residual plots --- designed for models where
+the response is observed directly --- do not apply when the latent state
+(true presence) is never seen.
+
+INLAocc addresses this with simulation-based diagnostics. The idea is
+simple: if the fitted model is correct, data simulated from it
+should look like the observed data. Any systematic discrepancy points to a
+specific kind of misspecification. This approach requires no distributional
+assumptions beyond the model itself, and it works for any occupancy model
+structure --- single-season, multi-season, spatial, or multi-species.
+
+This vignette covers the full diagnostic and model selection toolkit:
+the one-call diagnostic panel (`checkModel()`), individual hypothesis tests
+for uniformity, dispersion, outliers, and zero inflation, spatial and
+temporal autocorrelation diagnostics, DHARMa integration, posterior
+predictive checks, model comparison via information criteria and
+cross-validation, model averaging, and identifiability checks. For model
+fitting basics, see `vignette("quickstart")`; for spatial models
+specifically, see `vignette("spatial-models")`.
+
+## The simulation-based approach
+
+All simulation-based diagnostics in INLAocc follow the same logic. Given
+fitted parameters $\hat{\boldsymbol{\theta}}$:
+
+1. Simulate latent occupancy states
+   $z_i^{(r)} \sim \text{Bernoulli}(\hat{\psi}_i)$ for replicate
+   $r = 1, \ldots, R$.
+2. Simulate detection histories
+   $y_{ij}^{(r)} \sim \text{Bernoulli}(z_i^{(r)} \cdot \hat{p}_{ij})$.
+3. Compute a test statistic $T(\mathbf{y}^{(r)})$ on each simulated
+   dataset.
+4. Compare the observed statistic $T(\mathbf{y})$ to the distribution
+   $\{T(\mathbf{y}^{(r)})\}_{r=1}^R$.
+
+If $T(\mathbf{y})$ falls in the tails of the simulated distribution, the
+model is misspecified in the direction that $T$ measures. Different choices
+of $T$ target different aspects of model fit: variance (dispersion), tail
+behaviour (outliers), the number of all-zero sites (zero inflation), or the
+full distribution (PIT residuals).
+
+## Setup: fit a model to work with
+
+We simulate data with known parameters and fit a model that we will use
+throughout the vignette:
+
+```{r fit-example}
+library(INLAocc)
+
+sim <- simulate_occu(N = 300, J = 4,
+                     beta_occ = c(0.5, -0.8, 0.8),
+                     beta_det = c(0, -0.5),
+                     seed = 42)
+fit <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data, verbose = 0)
+```
+
+Because the data-generating model matches the fitted model, all diagnostics
+should pass. When they do not, the sections below explain what each failure
+means and how to fix it.
+
+## One-call diagnostic panel
+
+`checkModel()` produces a four-panel diagnostic plot that gives a quick
+visual overview of model adequacy:
+
+```{r checkmodel}
+checkModel(fit)
+```
+
+The four panels are:
+
+1. **QQ plot of PIT residuals.** Probability Integral Transform (PIT)
+   residuals transform each observed value through the fitted CDF. Under the
+   true model, these residuals follow a Uniform(0, 1) distribution, so the
+   QQ plot should track the diagonal. An S-shaped curve indicates
+   overdispersion (more variance than the model predicts). An inverted S
+   indicates underdispersion. A systematic shift away from the diagonal
+   suggests location bias --- the model is consistently over- or
+   under-predicting.
+
+2. **Residuals vs fitted.** Deviance residuals plotted against fitted
+   detection probabilities. This should be a formless cloud with no trends.
+   A funnel shape suggests heteroscedasticity. A curved trend suggests a
+   missing covariate or a wrong functional form (e.g., a linear term where a
+   quadratic is needed).
+
+3. **Dispersion histogram.** The variance of site-level detection counts is
+   computed for each simulated dataset, producing a reference distribution.
+   The red vertical line marks the observed variance. A ratio greater than
+   about 1.5 suggests overdispersion; below about 0.7 suggests
+   underdispersion.
+
+4. **Correlogram.** If site coordinates are available, this panel shows
+   Moran's I at increasing numbers of neighbours. A flat line near zero
+   means no residual spatial autocorrelation. Peaks at small neighbour
+   counts suggest local spatial structure that the model is not capturing.
+
+`checkModel()` returns its results invisibly, so you can extract numerical
+summaries:
+
+```{r checkmodel-extract}
+diag <- checkModel(fit)
+diag$ks_p       # KS test p-value for PIT residuals
+diag$disp_ratio # observed / expected dispersion ratio
+```
+
+## Individual diagnostic tests
+
+Each test below returns an `htest` object with a `$p.value` that you can
+use programmatically.
+
+### Uniformity (PIT residuals)
+
+```{r uniformity}
+testUniformity(fit)
+```
+
+A high p-value means the observed data are consistent with the fitted model
+across the entire distribution. This is the most general diagnostic: it
+detects any systematic departure from the model, though it has less power
+than targeted tests for specific problems.
+
+### Dispersion
+
+```{r dispersion}
+testDispersion(fit)
+```
+
+A dispersion ratio near 1 with a high p-value indicates correctly specified
+variance. Overdispersion (ratio substantially above 1) in occupancy models
+most often points to missing covariates, unmodelled heterogeneity among
+sites, or residual spatial structure.
+
+### Outliers
+
+```{r outliers}
+testOutliers(fit)
+```
+
+Sites are flagged as outliers if they fall outside the simulation envelope.
+A similar number of outlier sites to the expected count is unremarkable. A large excess of
+outliers points to heavy-tailed variation that the model does not account
+for.
+
+### Zero inflation
+
+```{r zero-inflation}
+testZeroInflation(fit)
+```
+
+"Zeros" here means sites where the species was never detected across all
+visits. The test is one-sided: it asks whether there are *more* all-zero
+sites than the model predicts. A significant result suggests either that
+true occupancy is lower than estimated (the occupancy submodel is
+misspecified) or that an additional zero-generating process is at work, such
+as a habitat suitability threshold that makes some sites structurally
+unsuitable.
+
+## Spatial diagnostics
+
+### Moran's I
+
+Residual spatial autocorrelation means the model is not capturing all
+spatial structure in the data. To test for it, first simulate spatially
+structured data and fit two models --- one that ignores space, one that
+accounts for it:
+
+```{r moran-setup}
+sim_sp <- simulate_occu(N = 300, J = 4, spatial_range = 0.3, seed = 123)
+
+# Non-spatial fit (ignores spatial structure)
+fit_nospatial <- occu(~ occ_x1, ~ det_x1, data = sim_sp$data, verbose = 0)
+moranI(fit_nospatial)
+```
+
+Significant Moran's I confirms that the non-spatial model leaves spatial
+structure in the residuals. Now fit a spatial model:
+
+```{r moran-spatial}
+fit_sp <- occu(~ occ_x1, ~ det_x1, data = sim_sp$data,
+               spatial = sim_sp$data$coords, verbose = 0)
+moranI(fit_sp)
+```
+
+Non-significant Moran's I confirms that the spatial random effect has absorbed
+the spatial structure. Two weighting schemes are available:
+
+- `weights = "inverse"` (default): inverse-distance weights across all pairs
+  of sites. Sensitive to broad-scale spatial structure.
+- `weights = "knn"` with `k = 10` (or another value): k nearest neighbours.
+  Sensitive to local spatial structure.
+
+```{r moran-knn}
+moranI(fit_sp, weights = "knn", k = 10)
+```
+
+### Semivariogram
+
+```{r variogram}
+variogram(fit_sp)
+```
+
+The semivariogram plots semivariance against distance. A flat line at the
+sill means no remaining spatial trend in the residuals. An increasing curve
+that does not flatten suggests the SPDE mesh is too coarse or the fitted
+range parameter is too short. See `vignette("spatial-models")` for guidance
+on mesh construction and range priors.
+
+## Temporal diagnostics
+
+For multi-season models, the Durbin-Watson test checks for residual lag-1
+autocorrelation across seasons:
+
+```{r durbin-watson}
+sim_t <- simTOcc(N = 100, J = 3, n_seasons = 5, seed = 300)
+fit_t <- occu(~ 1, ~ 1, data = sim_t$data, temporal = "ar1", verbose = 0)
+
+durbinWatson(fit_t)
+```
+
+The DW statistic ranges from 0 to 4. A value near 2 indicates no
+autocorrelation. Values near 0 suggest positive autocorrelation (successive
+residuals are similar), and values near 4 suggest negative autocorrelation
+(successive residuals alternate in sign). If the AR(1) temporal structure
+is adequate, the DW statistic should be close to 2.
+
+## DHARMa integration
+
+If [DHARMa](https://CRAN.R-project.org/package=DHARMa) is installed,
+`dharma()` converts INLAocc's simulation-based residuals into a DHARMa
+residual object. This gives access to DHARMa's full suite of diagnostic
+tests and plots:
+
+```{r dharma}
+res <- dharma(fit)
+plot(res)
+
+# Any DHARMa test works on the result
+DHARMa::testDispersion(res)
+DHARMa::testSpatialAutocorrelation(res, x = sim$data$coords[, 1],
+                                        y = sim$data$coords[, 2])
+```
+
+The advantage of this integration is interoperability: if you already use
+DHARMa for GLMs or GAMs, you can apply the same workflow to occupancy
+models. INLAocc handles the occupancy-specific simulation (accounting for
+the latent state) and DHARMa handles the visualization and testing.
+
+## Posterior predictive checks
+
+`ppcOccu()` implements Bayesian posterior predictive checks (Gelman et al.
+2013). It computes a fit statistic on both the observed data and on
+datasets replicated from the posterior, then reports a Bayesian p-value:
+
+```{r ppc}
+ppc <- ppcOccu(fit, fit.stat = "freeman-tukey", group = 1)
+ppc$bayesian.p
+```
+
+A Bayesian p-value near 0.5 indicates good fit --- the model generates data
+whose fit statistic distribution is centred on the observed value. Values
+near 0 or 1 indicate systematic misfit. The `fit.stat` argument accepts
+`"freeman-tukey"` or `"chi-squared"`. The `group` argument controls
+aggregation: `group = 1` computes the statistic by site (sensitive to
+site-level misfit), `group = 2` computes it by visit (sensitive to
+visit-level misfit).
+
+## Model comparison
+
+### Information criteria
+
+Fit a set of candidate models and compare them:
+
+```{r compare}
+m1 <- occu(~ 1, ~ 1, data = sim$data, verbose = 0)
+m2 <- occu(~ occ_x1, ~ det_x1, data = sim$data, verbose = 0)
+m3 <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data, verbose = 0)
+
+compare_models(null = m1, simple = m2, full = m3, criterion = "waic")
+```
+
+The `delta` column gives the difference in WAIC from the best model.
+`weight` gives the Akaike-style model weight, interpretable as the
+probability that each model is the best approximating model given the
+candidate set. WAIC (Widely Applicable Information Criterion) is
+recommended for Bayesian models because it uses the full posterior rather
+than a point estimate. AIC and BIC are also available via
+`criterion = "aic"` and `criterion = "bic"`.
+
+### WAIC decomposition
+
+`waicOccu()` decomposes WAIC into contributions from the occupancy and
+detection submodels:
+
+```{r waic-detail}
+w <- waicOccu(m3)
+w
+```
+
+The `pD` column gives the effective number of parameters for each component.
+If `pD` is much larger than the actual number of parameters, the model may
+be overfitting --- consider simplifying the covariate structure or adding
+regularizing priors.
+
+### K-fold cross-validation
+
+For out-of-sample predictive assessment, pass `k.fold` during fitting:
+
+```{r kfold, eval = FALSE}
+fit_cv <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data, k.fold = 5, verbose = 0)
+fit_cv$k.fold
+```
+
+This holds out 1/k of sites at a time, refits on the remaining data, and
+evaluates predictions on the held-out sites. K-fold cross-validation is more
+reliable than information criteria for small datasets or models with complex
+random effect structures, but it is k times slower because the model must be
+refit for each fold.
+
+## Model averaging
+
+When no single model clearly dominates --- for example, when the top two
+models have similar WAIC weights --- averaging predictions across models
+avoids conditioning on a potentially wrong model:
+
+```{r averaging}
+avg <- modelAverage(null = m1, simple = m2, full = m3, criterion = "waic")
+
+avg$weights       # model weights used for averaging
+avg$psi_hat[1:5]  # model-averaged occupancy estimates (first 5 sites)
+avg$psi_se[1:5]   # unconditional standard errors (first 5 sites)
+```
+
+The unconditional standard errors follow Burnham & Anderson (2002,
+eq. 4.9). They account for both within-model uncertainty (how precisely each
+model estimates occupancy) and between-model uncertainty (how much the
+models disagree). This avoids the false precision that comes from
+conditioning on a single selected model.
+
+## Prior specification
+
+INLAocc uses penalised complexity (PC) priors for random effects and spatial components. The default settings work well for most applications, but understanding how to adjust them is important when defaults produce unexpected results.
+
+### Fixed effects
+
+The default prior on all fixed-effect coefficients is $\mathcal{N}(0, 2.72)$ (precision 0.367), following Gelman et al. (2008) for logistic regression. On the logit scale, this gives a 95% prior interval of approximately $(-3.3, 3.3)$, which corresponds to occupancy probabilities from about 0.04 to 0.96. This is weakly informative --- it rules out extreme values but lets the data dominate.
+
+To change fixed-effect priors:
+
+```{r prior-fixed, eval = FALSE}
+prior <- occu_priors(
+  beta.normal = list(mean = 0, var = 1),    # tighter on occupancy
+  alpha.normal = list(mean = 0, var = 2.72)  # default on detection
+)
+fit_prior <- occu(~ occ_x1, ~ det_x1, data = sim$data, priors = prior)
+```
+
+### Random effects
+
+PC priors on random effect precision have two parameters: a scale $u$ and a tail probability $\alpha$, interpreted as $P(\sigma > u) = \alpha$. The default is $P(\sigma > 1) = 0.05$, meaning there is a 5% prior probability that the random effect standard deviation exceeds 1 on the logit scale. This shrinks toward the base model (no random effect) unless the data provide evidence otherwise.
+
+When to adjust:
+
+- **Few groups (< 5)**: The variance estimate is poorly identified. A tighter prior (e.g., $P(\sigma > 0.5) = 0.01$) prevents unreasonably large variance estimates.
+- **Many groups (> 50)**: The data strongly inform the variance. A looser prior (e.g., $P(\sigma > 2) = 0.1$) avoids over-shrinkage.
+- **Strong prior knowledge**: If previous studies show between-region SD of about 0.5 on the logit scale, set $P(\sigma > 0.5) = 0.5$ to centre the prior there.
+
+### Spatial components
+
+The SPDE spatial field uses PC priors on the range and marginal standard deviation, set via `occu_spatial()` or `spde.args`. The range prior $P(\text{range} < r_0) = p$ controls the minimum expected spatial correlation distance. The variance prior $P(\sigma > s_0) = p$ controls the maximum expected spatial variation.
+
+### Checking prior influence
+
+If a posterior is nearly identical to its prior, the data are not informing that parameter. Compare:
+
+```{r prior-check, eval = FALSE}
+# Prior: N(0, 2.72) → SD = 1.65
+# Posterior: summary(fit)$occ_fixed shows SD for each coefficient
+# If posterior SD ≈ 1.65, the prior is dominating
+```
+
+## Choosing the number of latent factors
+
+For multi-species models with latent factors, the number of factors $k$ is a model selection choice. Too few factors underfit species correlations; too many overfit to noise and slow computation.
+
+A practical workflow:
+
+```{r factor-selection, eval = FALSE}
+# Fit a sequence of factor models
+waic_by_k <- sapply(1:6, function(k) {
+  fit_k <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data,
+                multispecies = TRUE, n.factors = k)
+  waicOccu(fit_k)$waic
+})
+plot(1:6, waic_by_k, type = "b", xlab = "Number of factors", ylab = "WAIC")
+```
+
+Select the $k$ where WAIC stops improving. In most empirical datasets with 10-30 species, 2-5 factors suffice. Beyond that, additional factors capture noise rather than signal.
+
+Starting point: $k = \lfloor S / 2 \rfloor$ where $S$ is the number of species. Search downward from there.
+
+## Identifiability
+
+Before interpreting coefficients, verify that the model is identifiable:
+
+```{r identifiability}
+checkIdentifiability(fit)
+```
+
+This function flags three kinds of problems:
+
+- **Flat posteriors**: a parameter whose posterior is essentially the same as
+  its prior, meaning the data provide no information about it.
+- **Extreme correlations**: pairs of parameters with posterior correlation
+  above 0.95 in absolute value, indicating that the data cannot separate
+  their effects.
+- **Boundary estimates**: coefficients at or near the edge of the parameter
+  space (e.g., detection probability near 0 or 1).
+
+Identifiability problems are common in occupancy models when detection
+probability is very low (few detections per site), when the same covariate
+appears in both submodels, or when the number of visits per site is small.
+Remedies include increasing survey effort, reducing model complexity, using
+informative priors on detection parameters, or fixing one submodel while
+varying the other.
+
+## A diagnostic workflow
+
+A practical checklist for diagnosing a fitted occupancy model:
+
+1. **`checkModel(fit)`** --- visual overview of the four key diagnostics.
+2. **`testUniformity(fit)`** --- overall calibration of the model.
+3. **`testDispersion(fit)`** --- variance structure.
+4. **`testZeroInflation(fit)`** --- excess all-zero detection histories.
+5. **`moranI(fit)`** --- residual spatial autocorrelation (if site
+   coordinates are available).
+6. **`durbinWatson(fit)`** --- residual temporal autocorrelation (if
+   multi-season model).
+7. **`compare_models(...)`** --- select the best model from candidates.
+8. **`ppcOccu(fit)`** --- Bayesian posterior predictive validation.
+9. **`checkIdentifiability(fit)`** --- parameter identifiability.
+
+Steps 1--4 diagnose the current model. Step 5--6 check for structure the
+model may be missing. Steps 7--8 evaluate the model against alternatives
+and against its own assumptions. Step 9 ensures the parameters you plan to
+interpret are actually informed by the data.
+
+## When diagnostics fail
+
+Common diagnostic failures and their typical remedies:
+
+- **Significant Moran's I.** The model is not capturing spatial structure.
+  Add a spatial random effect via the `spatial` argument to `occu()`. See
+  `vignette("spatial-models")`.
+
+- **Overdispersion (ratio >> 1).** More variance than the model predicts.
+  Consider adding site-level random effects, additional covariates, or a
+  spatial term. Overdispersion often signals missing heterogeneity rather
+  than a wrong distribution.
+
+- **Excess zeros.** More all-zero sites than expected. This can indicate
+  that the occupancy submodel needs additional covariates (some sites are
+  truly unoccupied for reasons the model does not capture) or that a
+  zero-inflated occupancy structure is needed.
+
+- **Non-uniform PIT residuals.** The model is systematically mis-calibrated.
+  Check the functional form of covariates --- try adding polynomial or
+  spline terms if a covariate's effect may be nonlinear. Also check for
+  missing covariates.
+
+- **Bayesian p-value near 0 or 1.** The model fundamentally cannot
+  reproduce the observed data. This usually requires rethinking the model
+  structure rather than tweaking covariates: consider whether the occupancy
+  or detection process is specified correctly, whether there is unmodelled
+  heterogeneity, or whether the link function is appropriate.
+
+- **Identifiability warning.** The data do not support the current model
+  complexity. Reduce the number of covariates, increase survey effort
+  (more sites or more visits per site), use informative priors on detection
+  parameters, or fix one submodel to a simpler form while varying the
+  other. For multi-species models (`vignette("multi-species")`),
+  shared detection parameters across species can improve identifiability.
+
+## Convergence troubleshooting
+
+When the EM algorithm does not converge within `max_iter` iterations, the model reports `converged = FALSE`. Common causes and fixes:
+
+- **Too many parameters for the data.** Simplify the model: fewer covariates, fewer random effects, no spatial term. Fit the simplest model first and add complexity incrementally.
+
+- **Near-complete separation.** A covariate perfectly predicts occupancy or detection. Check `summary(fit)` for coefficients with very large absolute values (> 5) and wide credible intervals. Remove or transform the problematic covariate.
+
+- **Low detection.** When naive detection is below 0.10, the E-step weights for undetected sites are all near the prior, and the EM has little information to update. Increase survey effort, simplify the detection model, or use informative priors on detection.
+
+- **Oscillation.** The EM alternates between two parameter values without settling. Increase the damping parameter via `control = list(damping = 0.5)` or higher. Damping slows convergence but prevents oscillation.
+
+Use `verbose = 2` to monitor per-iteration convergence:
+
+```{r verbose, eval = FALSE}
+fit_debug <- occu(~ occ_x1, ~ det_x1, data = sim$data, verbose = 2)
+```
+
+This prints the maximum change in $\psi$ and $p$ at each iteration, the current damping value, and whether detection has been frozen. Look for: (a) delta values that decrease monotonically (healthy convergence), (b) delta values that oscillate (increase damping), or (c) delta values that plateau above `tol` (simplify model).
+
+For details on the EM algorithm and its tuning parameters, see `vignette("algorithm-details")`.
