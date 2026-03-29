@@ -28,8 +28,8 @@ species present at a site?) and detection (given presence, is it observed on
 a given visit?). This dual-process structure makes diagnostics both essential
 and non-trivial. Misspecification in either the occupancy or detection
 submodel can bias parameters in *both* submodels, because the likelihood
-entangles the two. Traditional residual plots --- designed for models where
-the response is observed directly --- do not apply when the latent state
+entangles the two. Traditional residual plots, designed for models where
+the response is observed directly, do not apply when the latent state
 (true presence) is never seen.
 
 INLAocc addresses this with simulation-based diagnostics. The idea is
@@ -37,7 +37,7 @@ simple: if the fitted model is correct, data simulated from it
 should look like the observed data. Any systematic discrepancy points to a
 specific kind of misspecification. This approach requires no distributional
 assumptions beyond the model itself, and it works for any occupancy model
-structure --- single-season, multi-season, spatial, or multi-species.
+structure (single-season, multi-season, spatial, or multi-species).
 
 This vignette covers the full diagnostic and model selection toolkit:
 the one-call diagnostic panel (`checkModel()`), individual hypothesis tests
@@ -109,7 +109,7 @@ The four panels are:
    QQ plot should track the diagonal. An S-shaped curve indicates
    overdispersion (more variance than the model predicts). An inverted S
    indicates underdispersion. A systematic shift away from the diagonal
-   suggests location bias --- the model is consistently over- or
+   suggests location bias: the model is consistently over- or
    under-predicting. Pay attention to where the deviations occur. Departures at the tails (the upper-right and lower-left corners of the QQ plot) indicate problems with extreme values: outlier sites that the model cannot explain, or heavy-tailed variation in the data. Departures in the middle of the plot point to problems with the mean structure: the model is getting the central tendency wrong, which usually means a missing covariate or a misspecified functional form.
 
 2. **Residuals vs fitted.** Deviance residuals plotted against fitted
@@ -198,7 +198,7 @@ In occupancy models, all-zero detection histories have two possible causes: the 
 
 Residual spatial autocorrelation means the model is not capturing all
 spatial structure in the data. To test for it, first simulate spatially
-structured data and fit two models --- one that ignores space, one that
+structured data and fit two models: one that ignores space, one that
 accounts for it:
 
 ```{r moran-setup}
@@ -293,7 +293,7 @@ ppc <- ppcOccu(fit, fit.stat = "freeman-tukey", group = 1)
 ppc$bayesian.p
 ```
 
-A Bayesian p-value near 0.5 indicates good fit --- the model generates data
+A Bayesian p-value near 0.5 indicates good fit; the model generates data
 whose fit statistic distribution is centred on the observed value. Values
 near 0 or 1 indicate systematic misfit. The `fit.stat` argument accepts
 `"freeman-tukey"` or `"chi-squared"`. The `group` argument controls
@@ -341,14 +341,14 @@ w
 
 The `pD` column gives the effective number of parameters for each component.
 If `pD` is much larger than the actual number of parameters, the model may
-be overfitting --- consider simplifying the covariate structure or adding
+be overfitting. Consider simplifying the covariate structure or adding
 regularizing priors.
 
 ### K-fold cross-validation
 
 For out-of-sample predictive assessment, pass `k.fold` during fitting:
 
-```{r kfold, eval = FALSE}
+```{r kfold}
 fit_cv <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data, k.fold = 5, verbose = 0)
 fit_cv$k.fold
 ```
@@ -361,8 +361,8 @@ refit for each fold.
 
 ## Model averaging
 
-When no single model clearly dominates --- for example, when the top two
-models have similar WAIC weights --- averaging predictions across models
+When no single model clearly dominates (for example, when the top two
+models have similar WAIC weights), averaging predictions across models
 avoids conditioning on a potentially wrong model:
 
 ```{r averaging}
@@ -385,7 +385,7 @@ INLAocc uses penalised complexity (PC) priors for random effects and spatial com
 
 ### Fixed effects
 
-The default prior on all fixed-effect coefficients is $\mathcal{N}(0, 2.72)$ (precision 0.367), following Gelman et al. (2008) for logistic regression. On the logit scale, this gives a 95% prior interval of approximately $(-3.3, 3.3)$, which corresponds to occupancy probabilities from about 0.04 to 0.96. This is weakly informative --- it rules out extreme values but lets the data dominate.
+The default prior on all fixed-effect coefficients is $\mathcal{N}(0, 2.72)$ (precision 0.367), following Gelman et al. (2008) for logistic regression. On the logit scale, this gives a 95% prior interval of approximately $(-3.3, 3.3)$, which corresponds to occupancy probabilities from about 0.04 to 0.96. This is weakly informative: it rules out extreme values but lets the data dominate.
 
 To change fixed-effect priors:
 
@@ -417,10 +417,20 @@ The SPDE spatial field uses PC priors on the range and marginal standard deviati
 
 If a posterior is nearly identical to its prior, the data are not informing that parameter. Compare:
 
-```{r prior-check, eval = FALSE}
-# Prior: N(0, 2.72) → SD = 1.65
-# Posterior: summary(fit)$occ_fixed shows SD for each coefficient
-# If posterior SD ≈ 1.65, the prior is dominating
+```{r prior-check}
+# Compare prior vs posterior for the occupancy intercept
+# Default prior: N(0, 2.72) -> SD = sqrt(2.72) = 1.65
+prior_sd <- sqrt(2.72)
+posterior_sd <- fit$occ_fit$summary.fixed["(Intercept)", "sd"]
+cat("Prior SD:", round(prior_sd, 2), "\n")
+cat("Posterior SD:", round(posterior_sd, 2), "\n")
+cat("Ratio (posterior/prior):", round(posterior_sd / prior_sd, 2), "\n")
+if (posterior_sd / prior_sd > 0.9) {
+  cat("Warning: posterior SD is close to prior SD",
+      "-- data may not inform this parameter\n")
+} else {
+  cat("Data is informing this parameter (posterior is tighter than prior)\n")
+}
 ```
 
 Prior-posterior overlap is a useful diagnostic for individual parameters. If the posterior distribution for a coefficient is nearly identical to the prior, the data contain little information about that parameter. A concrete way to check this: compare the posterior standard deviation to the prior standard deviation. With the default $\mathcal{N}(0, 2.72)$ prior, the prior SD is 1.65. If a coefficient's posterior SD is also around 1.65, the data have not narrowed the estimate beyond what the prior already specified. The posterior mean may differ from zero, but if the width has not changed, the estimate is driven by the prior rather than by the data. This is not necessarily a problem if the prior is well justified, but it means the data do not support inference about that particular effect.
@@ -429,23 +439,178 @@ For random effects, the analogous check compares the posterior distribution of t
 
 ## Choosing the number of latent factors
 
-For multi-species models with latent factors, the number of factors $k$ is a model selection choice. Too few factors underfit species correlations; too many overfit to noise and slow computation.
+### Why factor count matters
 
-A practical workflow:
+Multi-species occupancy models estimate separate occupancy and detection parameters for every species in a community. With $S$ species, the number of pairwise species correlations in occupancy grows as $S(S-1)/2$. For a 20-species community, that is 190 covariance parameters --- far too many to estimate directly from typical survey data. Latent factor models solve this by assuming that species correlations arise from a small number of shared latent gradients. Each species loads onto $k$ latent factors, and the $S \times S$ covariance matrix is approximated by the product $\Lambda \Lambda^\top$, where $\Lambda$ is the $S \times k$ matrix of factor loadings. This reduces the covariance parameterization from $O(S^2)$ to $O(Sk)$, which is tractable when $k \ll S$.
 
-```{r factor-selection, eval = FALSE}
-# Fit a sequence of factor models
-waic_by_k <- sapply(1:6, function(k) {
-  fit_k <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data,
-                multispecies = TRUE, n.factors = k)
-  waicOccu(fit_k)$waic
-})
-plot(1:6, waic_by_k, type = "b", xlab = "Number of factors", ylab = "WAIC")
+The number of latent factors $k$ controls this dimension reduction. It is a model selection decision analogous to choosing the number of principal components in a PCA: too few factors miss the dominant species associations, biasing occupancy estimates for species whose co-occurrence patterns are not represented; too many factors overfit to sampling noise in the detection histories, inflating variance and slowing computation without improving ecological insight.
+
+Choosing $k$ matters for three reasons. First, it determines how well the model captures species correlations, which directly affects the precision of occupancy estimates for rare species that borrow information from common ones. Second, it controls the effective number of parameters and therefore the risk of overfitting. Third, it determines computational cost, because each additional factor adds $S$ loading parameters and $N$ latent scores that must be estimated.
+
+### A worked example
+
+We simulate a community of 15 species surveyed at 150 sites with 4 repeat visits, then fit latent factor models with $k = 1, 2, 3, 5,$ and $8$ factors. The simulation uses the default community-level coefficient distributions, which produce a mix of common and rare species with moderate inter-species correlation.
+
+```{r factor-setup}
+sim_ms <- simMsOcc(N = 150, J = 4, n_species = 15, seed = 42)
 ```
 
-Select the $k$ where WAIC stops improving. In most empirical datasets with 10-30 species, 2-5 factors suffice. Beyond that, additional factors capture noise rather than signal.
+Now we fit a sequence of models, each with a different number of latent factors, and record WAIC and computation time for each:
 
-Starting point: $k = \lfloor S / 2 \rfloor$ where $S$ is the number of species. Search downward from there.
+```{r factor-fit-sequence}
+k_values <- c(1, 2, 3, 5, 8)
+
+results <- lapply(k_values, function(k) {
+  t0 <- proc.time()
+  fit_k <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data,
+                multispecies = TRUE, n.factors = k, verbose = 0)
+  elapsed <- (proc.time() - t0)["elapsed"]
+  waic_k <- waicOccu(fit_k)$WAIC
+  list(k = k, waic = waic_k, time = elapsed, fit = fit_k)
+})
+
+factor_table <- data.frame(
+  k       = sapply(results, `[[`, "k"),
+  WAIC    = sapply(results, `[[`, "waic"),
+  time_s  = round(sapply(results, `[[`, "time"), 1)
+)
+factor_table$delta_WAIC <- factor_table$WAIC - min(factor_table$WAIC)
+factor_table
+```
+
+The table shows WAIC, the WAIC difference from the best model ($\Delta$WAIC), and wall-clock time in seconds. We can visualize this as an elbow plot:
+
+```{r factor-elbow-plot, fig.height = 4}
+library(ggplot2)
+
+ggplot(factor_table, aes(x = k, y = WAIC)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 3) +
+  labs(x = "Number of latent factors (k)", y = "WAIC") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA)
+  )
+```
+
+The pattern to look for is an elbow: WAIC improves steeply as $k$ increases from 1 to some value, then flattens or begins to increase. The point where the curve flattens is the number of factors that captures the dominant species associations without overfitting. In this simulated example with 15 species and no true latent factor structure (species correlations arise only from shared covariates), a small number of factors (typically 2 or 3) is sufficient, and additional factors provide negligible improvement.
+
+### Examining factor loadings
+
+After selecting a value of $k$, inspect the estimated factor loadings to check whether the factors have ecological interpretability. The loadings matrix $\Lambda$ shows how strongly each species associates with each latent gradient:
+
+```{r factor-loadings}
+best_idx <- which.min(factor_table$WAIC)
+best_fit <- results[[best_idx]]$fit
+
+lam <- best_fit$lambda
+rownames(lam) <- best_fit$species_names
+colnames(lam) <- paste0("Factor_", seq_len(ncol(lam)))
+round(lam, 3)
+```
+
+Species with loadings of the same sign on a given factor tend to co-occur; species with opposite signs tend to segregate. A factor where most species load near zero is not contributing meaningful structure and can likely be dropped. In practice, you are looking for factors where a clear subset of species loads strongly (absolute loading above 0.3) and the remaining species are near zero. Such a factor represents a shared ecological gradient --- for example, a preference for wet versus dry habitats, or a response to canopy cover.
+
+If the loadings matrix shows no interpretable pattern even at the optimal $k$ by WAIC, this does not mean the factors are useless. Latent factors serve two purposes: capturing interpretable species associations and improving prediction by borrowing strength across species. A model can achieve the second goal without achieving the first. Uninterpretable factors that improve WAIC are still doing useful work: they absorb residual covariance that would otherwise inflate standard errors.
+
+### Rules of thumb for choosing $k$
+
+**Starting point.** A reasonable initial guess is $k = \lfloor S / 2 \rfloor$, where $S$ is the number of species. Then search downward by comparing WAIC. For the 15-species community above, this suggests starting at $k = 7$ and checking whether simpler models perform as well. This starting point is deliberately generous; it is easier to simplify a model that works than to discover that you need more factors after fitting everything with too few.
+
+**Small communities (5--10 species).** With few species, the number of pairwise correlations is modest ($\leq 45$), and 1--3 factors usually suffice. The data rarely contain enough information to estimate more factors reliably. If $k = 1$ and $k = 2$ give similar WAIC, prefer $k = 1$ for interpretability.
+
+**Medium communities (10--30 species).** This is the range where factor models provide the most benefit. The covariance matrix is too large to estimate freely, but there are enough species that shared gradients can be identified. Expect 2--5 factors to be optimal in most cases. If the community includes distinct guilds (e.g., forest specialists and grassland specialists), you may need one factor per guild.
+
+**Large communities (30+ species).** With many species, more factors may be needed to capture the full correlation structure. However, the marginal gain from each additional factor decreases, and computational cost increases. Rarely are more than 8--10 factors justified in practice. For communities of 50+ species, consider whether a hierarchical grouping (e.g., by functional guild or taxonomic family) might be more appropriate than a single large factor model.
+
+**Data richness.** The number of sites and visits constrains how many factors the data can support. As a rough guide, you need at least $10 \cdot k$ sites with detections spread across multiple species to estimate $k$ factors reliably. A dataset with 50 sites and 3 visits per site can support at most 2--3 factors regardless of the number of species. Adding more factors with sparse data leads to loadings that are poorly identified: the posterior concentrations around the prior rather than around a data-driven estimate.
+
+**Rare species.** Communities with many rare species (detected at fewer than 10% of sites) benefit from factor models because the factors borrow information from common species to improve estimates for rare ones. However, rare species also have the weakest signal for estimating their own loadings. If most species are rare, prefer fewer factors. The loadings for rare species will be dominated by the prior regardless of $k$, and adding factors mainly helps the common species.
+
+### When more factors help versus when they overfit
+
+More factors help when the true species correlation structure is complex, for example when the community spans multiple habitat types and species respond differently to each. In such cases, a single factor cannot capture the pattern of some species co-occurring in forests while others co-occur in grasslands, and separate factors are needed for each habitat axis. The WAIC improvement from adding the second or third factor is substantial (typically $> 10$ WAIC units) and consistent across different random seeds.
+
+More factors overfit when the true correlations are simple or when the data are sparse. Overfitting manifests as WAIC that does not improve (or gets worse) as $k$ increases, and as loadings that are small in magnitude for most species on the added factors. A more subtle sign is instability: if you refit the model with a different random seed and the loadings on the last factor change sign or reorder, that factor is fitting noise.
+
+A practical diagnostic is to check whether the per-species WAIC decomposition changes with $k$:
+
+```{r factor-per-species-waic}
+# Compare per-species WAIC between k=2 and k=5
+fit_k2 <- results[[which(factor_table$k == 2)]]$fit
+fit_k5 <- results[[which(factor_table$k == 5)]]$fit
+
+sp_waic_k2 <- waicOccu(fit_k2, by.sp = TRUE)
+sp_waic_k5 <- waicOccu(fit_k5, by.sp = TRUE)
+
+delta_sp <- data.frame(
+  species    = sp_waic_k2$species,
+  WAIC_k2    = round(sp_waic_k2$WAIC, 1),
+  WAIC_k5    = round(sp_waic_k5$WAIC, 1),
+  difference = round(sp_waic_k5$WAIC - sp_waic_k2$WAIC, 1)
+)
+delta_sp
+```
+
+If the additional factors help only one or two species and make no difference for the rest, the improvement is fragile; it may reflect idiosyncratic noise in those species rather than genuine shared structure. A reliable improvement from adding factors should be distributed across multiple species.
+
+### Computational cost
+
+Each latent factor adds $S$ loading parameters and $N$ factor scores. The dominant cost in INLAocc's latent factor models is the per-species INLA fits, which scale with the number of sites and the complexity of the covariate structure. The factor extraction itself (via PCA on the fitted logit-occupancy matrix) is fast and adds negligible overhead.
+
+The main computational scaling is therefore:
+
+- **Per-species fits**: $O(S)$ independent INLA calls, each scaling with $N$ and the number of covariates. This is the bottleneck and can be parallelized via `options(INLAocc.cores = 4)`.
+- **Factor extraction**: $O(N \cdot S \cdot k)$ for the PCA, which is negligible relative to the INLA fits.
+- **Memory**: The factor loadings matrix and scores add $O(S \cdot k + N \cdot k)$ storage, which is small.
+
+In practice, the wall-clock time scales approximately linearly with $S$ (since each species is fit independently) and is nearly independent of $k$. The factor count affects the post-processing step but not the dominant per-species fitting cost. This means that the computational argument for fewer factors is about preventing overfitting, not about speed. You can compare the timing column in the table above to confirm that fitting with $k = 8$ factors is not substantially slower than fitting with $k = 2$ factors for this dataset.
+
+For large communities where per-species fitting is the bottleneck, enable parallel fitting:
+
+```{r factor-parallel, eval = FALSE}
+options(INLAocc.cores = 4)
+fit_par <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data,
+                multispecies = TRUE, n.factors = 3, verbose = 0)
+```
+
+### Checking whether factor count changes ecological conclusions
+
+The final and most important check: does the choice of $k$ affect the ecological conclusions you would draw? If the community-level covariate effects are stable across different values of $k$, the factor count is a modelling detail rather than a scientific decision. If they change, you need to understand why.
+
+Compare the community-level occupancy effect of the covariate across different values of $k$:
+
+```{r factor-coef-stability}
+coef_table <- do.call(rbind, lapply(results, function(r) {
+  cf <- coef(r$fit, process = "occupancy")
+  # Community-level mean coefficients
+  data.frame(
+    k         = r$k,
+    intercept = mean(cf[grepl("Intercept", names(cf))]),
+    occ_x1    = mean(cf[grepl("occ_x1", names(cf))])
+  )
+}))
+coef_table
+```
+
+If the estimated effect of `occ_x1` is 0.4 with $k = 2$ and 0.5 with $k = 5$, the conclusions are the same (moderate positive effect). If it is 0.4 with $k = 2$ and $-0.1$ with $k = 5$, the additional factors are absorbing variation that was previously attributed to the covariate, and you need to investigate further, because the covariate effect may be confounded with a latent gradient.
+
+A stable set of conclusions across a range of $k$ values is reassuring. It means the covariate effects are identified by the data regardless of how the residual species correlations are modelled. Instability means the covariate effects depend on the correlation structure, which is a sign that more data or a different model structure is needed to separate the two.
+
+### Summary of the factor selection workflow
+
+1. **Simulate or assemble data.** Ensure the multi-species data object is correctly formatted via `simMsOcc()` or `occu_format_ms()`.
+
+2. **Fit a sequence.** Start at $k = \lfloor S / 2 \rfloor$ and fit models for $k = 1, 2, 3, \ldots$ up to that value.
+
+3. **Compare WAIC.** Plot the elbow curve. Select the $k$ where WAIC stops improving ($\Delta$WAIC $< 2$ relative to the next simpler model).
+
+4. **Inspect loadings.** Check whether the selected factors have ecological interpretability. Uninterpretable factors that improve WAIC are acceptable but deserve scrutiny.
+
+5. **Check per-species WAIC.** Verify that the improvement from additional factors is distributed across species, not driven by one or two.
+
+6. **Test conclusion stability.** Compare community-level covariate effects across values of $k$. If conclusions are stable, report the simplest adequate model. If they are not, investigate the source of instability before proceeding.
 
 ## Identifiability
 
@@ -476,23 +641,23 @@ varying the other.
 
 A practical checklist for diagnosing a fitted occupancy model:
 
-1. **`checkModel(fit)`** --- visual overview of the four key diagnostics.
+1. **`checkModel(fit)`**: visual overview of the four key diagnostics.
 
-2. **`testUniformity(fit)`** --- overall calibration of the model.
+2. **`testUniformity(fit)`**: overall calibration of the model.
 
-3. **`testDispersion(fit)`** --- variance structure.
+3. **`testDispersion(fit)`**: variance structure.
 
-4. **`testZeroInflation(fit)`** --- excess all-zero detection histories.
+4. **`testZeroInflation(fit)`**: excess all-zero detection histories.
 
-5. **`moranI(fit)`** --- residual spatial autocorrelation (if site
+5. **`moranI(fit)`**: residual spatial autocorrelation (if site
    coordinates are available).
-6. **`durbinWatson(fit)`** --- residual temporal autocorrelation (if
+6. **`durbinWatson(fit)`**: residual temporal autocorrelation (if
    multi-season model).
-7. **`compare_models(...)`** --- select the best model from candidates.
+7. **`compare_models(...)`**: select the best model from candidates.
 
-8. **`ppcOccu(fit)`** --- Bayesian posterior predictive validation.
+8. **`ppcOccu(fit)`**: Bayesian posterior predictive validation.
 
-9. **`checkIdentifiability(fit)`** --- parameter identifiability.
+9. **`checkIdentifiability(fit)`**: parameter identifiability.
 
 Steps 1--4 diagnose the current model. Step 5--6 check for structure the
 model may be missing. Steps 7--8 evaluate the model against alternatives
@@ -524,7 +689,7 @@ Common diagnostic failures and their typical remedies:
   Consider a survey of a forest-dependent species where the sampling design includes sites at the edge of the species' range with marginal habitat. The model, using elevation and canopy cover as covariates, assigns moderate occupancy probability to these marginal sites. But some of them are simply too small or too isolated to support a population, and no combination of the available covariates can separate them from the suitable sites. The result is an excess of all-zero detection histories. Adding a patch size or connectivity covariate, if available, can fix this. If no such covariate exists, a zero-inflated model structure explicitly accounts for the two sources of zeros.
 
 - **Non-uniform PIT residuals.** The model is systematically mis-calibrated.
-  Check the functional form of covariates --- try adding polynomial or
+  Check the functional form of covariates. Try adding polynomial or
   spline terms if a covariate's effect may be nonlinear. Also check for
   missing covariates.
 

@@ -25,16 +25,16 @@ knitr::opts_chunk$set(
 
 INLAocc fits hierarchical occupancy models using Integrated Nested Laplace
 Approximations (INLA) instead of Markov chain Monte Carlo (MCMC). The package
-provides a single entry point --- `occu()` --- that handles single-species,
+provides a single entry point, `occu()`, that handles single-species,
 multi-species, spatial, and temporal occupancy models through a familiar
 formula interface.
 
 Occupancy modeling addresses a fundamental problem in ecology: species are
 present at some sites but may go undetected on any given survey visit. Without
 accounting for this imperfect detection, naive estimates of species occurrence
-are biased low. The occupancy model separates two processes --- the ecological
+are biased low. The occupancy model separates two processes: the ecological
 state (is the species truly there?) and the observation process (did we detect
-it?) --- to produce unbiased estimates of both occupancy and detection
+it?). This separation produces unbiased estimates of both occupancy and detection
 probability.
 
 INLA replaces MCMC sampling with a deterministic approximation to the
@@ -46,11 +46,12 @@ summaries that are nearly indistinguishable from long MCMC runs.
 
 This vignette walks through the core workflow: simulating data with known
 parameters, fitting a basic single-species model, checking the fit with
-diagnostics, adding random effects, comparing competing models, and making
-predictions. For spatial models with SPDE random fields, see
-`vignette("spatial-models")`. For multi-species community models, see
-`vignette("multi-species")`. For a full treatment of the diagnostic toolkit,
-see `vignette("diagnostics")`.
+diagnostics, adding random effects, comparing competing models, making
+predictions, and then extending to spatial and multi-species models. For the
+full treatment of spatial models (mesh control, PC priors, spatially varying
+coefficients), see `vignette("spatial-models")`. For the full treatment of
+multi-species models (latent factors, JSDMs), see `vignette("multi-species")`.
+For the diagnostic toolkit in depth, see `vignette("diagnostics")`.
 
 
 ## The occupancy model
@@ -80,8 +81,49 @@ impossible: $y_{ij} = 0$ for all visits $j$, regardless of $p_{ij}$. When
 $z_i = 1$ (species present), each visit is an independent Bernoulli trial with
 success probability $p_{ij}$. A site where the species was never detected
 across all visits could be either truly unoccupied or occupied but missed every
-time --- the model uses the repeated visits to disentangle these two
+time. The model uses the repeated visits to disentangle these two
 explanations.
+
+The likelihood that results from marginalizing over the latent $z_i$ is a
+finite mixture of two components: the site is absent (probability $1 - \psi_i$,
+all detections must be zero) or the site is occupied (probability $\psi_i$,
+detections follow independent Bernoulli trials). This mixture does not factor
+into separate occupancy and detection terms the way a standard GLM likelihood
+does. The two processes are entangled: the detection data inform occupancy
+(many non-detections lower the posterior probability of presence), and the
+occupancy probability informs detection (if a site is likely absent, its
+non-detections carry no information about $p$). Any fitting method must handle
+this coupling. MCMC does it by augmenting the model with the latent $z_i$ and
+sampling all unknowns jointly. INLA, which is designed for latent Gaussian
+models, cannot handle the discrete mixture directly.
+
+Identifiability comes from the repeated visits. With a single visit ($J = 1$),
+a non-detection could mean the species is absent or that it is present but
+undetected, and there is no way to distinguish these explanations from the
+data alone. With $J > 1$ visits, the pattern of detections and non-detections
+across visits provides leverage. If a species is detected at some visits but
+not others at a site, this directly estimates $p$ (the proportion of visits
+with detections at occupied sites). If a species is never detected at a site
+despite many visits, and detection is estimated to be reasonably high from
+other sites, the model can infer that the site is more likely absent than
+occupied-but-missed. The information accumulates geometrically: the probability
+of missing a present species on all $J$ visits is $(1 - p)^J$, which shrinks
+quickly as $J$ or $p$ increases.
+
+The difficulty of estimation depends on where detection falls. When per-visit
+detection is high ($p > 0.5$), the model is easy to fit. Most occupied sites
+are detected, the "all-zero" sites are mostly truly absent, and there is little
+ambiguity. The occupancy estimate is close to the naive detection rate, and
+credible intervals are narrow. When detection is low ($p < 0.15$), the model
+becomes hard. Many occupied sites go undetected, so a large fraction of sites
+have ambiguous status. The model must infer both $\psi$ and $p$ from data
+where most of the occupancy signal is hidden, and the estimates are sensitive
+to model assumptions. In the extreme case ($p \to 0$), the model is
+unidentifiable again: if you never detect the species anywhere, you cannot
+distinguish zero occupancy from nonzero occupancy with zero detection. Most
+real surveys fall between these extremes, with detection rates of 0.15--0.5
+per visit, where the model is identifiable but the estimates carry nontrivial
+uncertainty.
 
 The full likelihood marginalizes over the latent $z_i$, producing a finite
 mixture that standard INLA cannot fit directly. INLAocc handles this with an
@@ -110,6 +152,29 @@ sim <- simulate_occu(
 )
 ```
 
+Simulation is the first step in any occupancy analysis workflow. Before fitting
+a model to field data, you simulate from known parameter values to verify that
+the model and code recover those values correctly. This catches formula errors
+(wrong covariates, mismatched dimensions), data formatting issues (detection
+matrix orientation, missing values), and convergence problems (non-identified
+parameters, extreme starting values) before they contaminate real results.
+Simulation also builds intuition about what the data should look like under
+different parameter regimes. If your simulated data with $p = 0.2$ produces
+detection histories that look nothing like your field data, your assumed
+detection rate is probably wrong.
+
+The parameters in the call above have specific ecological interpretations. An
+occupancy intercept of 0.5 on the logit scale corresponds to
+$\text{logit}^{-1}(0.5) \approx 0.62$, meaning 62% baseline occupancy. The
+slope of $-0.8$ is a strong negative effect: a one-unit increase in the
+covariate drops the log-odds of occupancy by 0.8, roughly halving the odds.
+The second slope of $0.8$ is an equally strong positive effect. The detection
+intercept of 0 corresponds to exactly 50% detection per visit at the covariate
+mean, and the detection slope of $-0.5$ means detection degrades under
+unfavorable conditions. These are not unusual values for real ecological
+surveys; detection rates between 0.2 and 0.6 per visit and occupancy rates
+between 0.3 and 0.7 are common for many vertebrate taxa.
+
 This creates 200 sites with 4 visits each. The occupancy linear predictor has
 an intercept of 0.5 and two covariate effects ($-0.8$ and $0.8$). The detection
 linear predictor has an intercept of 0 (corresponding to detection probability
@@ -124,7 +189,7 @@ summary(sim$data)
 ```
 
 The naive occupancy rate (proportion of sites where the species was detected at
-least once) is a lower bound on the true occupancy rate --- some occupied sites
+least once) is a lower bound on the true occupancy rate, because some occupied sites
 had the species go undetected across all four visits. A central goal of the
 model is to estimate how many of those "all-zero" sites are actually occupied.
 
@@ -137,7 +202,7 @@ plot(sim$data)
 
 The detection frequency histogram (number of visits per site where the species
 was detected) is the first thing to examine. A distribution concentrated at zero
-means either the species is rare or detection probability is low --- the model
+means either the species is rare or detection probability is low. The model
 will try to disentangle these, but extremely sparse data (say, detections at
 fewer than 10% of sites) makes parameter estimation unstable. At the other
 extreme, if the species is detected on every visit at most sites, there is
@@ -148,7 +213,7 @@ Check the covariate histograms for extreme skew, outliers, or gaps. Covariates
 that are strongly skewed or have a few extreme values can dominate the linear
 predictor, pulling fitted probabilities toward 0 or 1 for those observations.
 Centering and scaling covariates before fitting (which `simulate_occu()` does by
-default) mitigates this. Also check for missing visits --- `NA` entries in the
+default) mitigates this. Also check for missing visits: `NA` entries in the
 detection matrix are handled by the likelihood, but sites with only one valid
 visit out of four contribute less information about detection probability, and
 many such sites can widen credible intervals.
@@ -173,7 +238,7 @@ summary(fit)
 **Interpreting the output.** The true occupancy coefficients were
 $\boldsymbol{\beta} = (0.5, -0.8, 0.8)$ and the true detection coefficients
 were $\boldsymbol{\alpha} = (0, -0.5)$. Compare the posterior means to these
-true values --- they should be close, and all 95% credible intervals should
+true values. They should be close, and all 95% credible intervals should
 contain the generating values.
 
 The estimated mean occupancy probability is higher than the naive
@@ -188,7 +253,7 @@ zero: an intercept of 0.5 corresponds to $\text{logit}^{-1}(0.5) \approx 0.62$,
 meaning about 62% of sites are occupied at the covariate mean. Each slope
 coefficient gives the change in log-odds per unit increase in the covariate. A
 coefficient of $-0.8$ means a one-unit increase drops the log-odds of occupancy
-by 0.8, which is a substantial effect --- roughly halving the odds.
+by 0.8, a substantial effect that roughly halves the odds.
 
 The detection intercept has a parallel interpretation. An intercept of 0
 translates to $\text{logit}^{-1}(0) = 0.5$, meaning a 50% chance of detecting
@@ -198,12 +263,32 @@ visits, the probability of detecting a present species at least once is
 $1 - (1 - 0.5)^4 = 0.94$. Pushing detection above 0.7 per visit (through
 better survey methods or more effort) would raise this to 0.99. Conversely, if
 the detection intercept is strongly negative (say $-1.5$, giving $p \approx
-0.18$), four visits yield only a 55% chance of detecting a present species ---
+0.18$), four visits yield only a 55% chance of detecting a present species,
 and the model must attribute many all-zero sites to missed detections rather
 than true absence, widening the occupancy credible intervals.
 
+The credible intervals deserve attention. A 95% credible interval of, say,
+$(-1.1, -0.5)$ for a slope coefficient means there is a 95% posterior
+probability that the true coefficient falls in that range. The interval does
+not contain zero, so there is strong evidence for a nonzero effect. When an
+interval spans zero (say $(-0.3, 0.4)$), the data are consistent with
+no effect, a weak positive effect, and a weak negative effect. The width of
+the interval reflects how much information the data carry about that parameter.
+Narrow intervals come from large sample sizes and high detection rates; wide
+intervals come from small samples, low detection, or collinear covariates.
+
+The estimated occupancy is higher than the naive detection rate (the
+proportion of sites where the species was detected at least once). The gap
+between these two numbers is the model's estimate of how many occupied sites
+were missed entirely. In conservation contexts, this gap matters: the naive
+rate underestimates the species' range, which could lead to underprotection.
+If the estimated occupancy is 0.65 but the naive rate is 0.50, the model
+says roughly 15% of sites are occupied but undetected, and those sites
+may include habitat that would otherwise be classified as empty and
+potentially cleared or developed.
+
 Because INLA is deterministic, re-running this code produces identical
-results --- there is no Monte Carlo variability to worry about.
+results, with no Monte Carlo variability to worry about.
 
 
 ## Checking the fit
@@ -215,7 +300,7 @@ through the `checkModel()` function and targeted hypothesis tests through
 
 Occupancy models pose a specific diagnostic challenge. The response variable is
 binary (detected or not), so standard residual plots that assume continuous or
-count data are misleading. Worse, the ecological state $z_i$ is latent --- you
+count data are misleading. Worse, the ecological state $z_i$ is latent: you
 never observe whether a site is truly occupied, only whether the species was
 detected. This means you cannot compute traditional residuals that compare
 observed vs. expected counts at a site. Simulation-based diagnostics sidestep
@@ -237,22 +322,52 @@ The four panels are:
 1. **QQ plot of PIT residuals.** Probability integral transform (PIT) residuals
    should follow a uniform distribution if the model is correctly specified.
    On the QQ plot, this means the points should fall along the diagonal.
-   Systematic departures indicate model misspecification --- an S-shaped curve
-   suggests overdispersion, while a step pattern suggests zero-inflation.
+   Systematic departures indicate model misspecification. An S-shaped curve
+   (residuals above the diagonal at both tails) suggests overdispersion,
+   meaning the data are more variable than the model predicts. In occupancy models,
+   overdispersion often arises from unmodelled heterogeneity: sites within a
+   group differ in ways that the covariates do not capture. For example, two
+   forests with the same canopy cover may differ in understory density, and
+   the species responds to understory. A step pattern (flat stretches in the
+   QQ plot) suggests zero-inflation: more all-zero sites than the model
+   expects. This happens when some portion of the landscape is structurally
+   unsuitable (e.g., paved surfaces in a bird survey) and should have zero
+   occupancy regardless of covariates. Adding a habitat-suitability filter
+   or a zero-inflated occupancy model addresses this.
 
 2. **Residuals vs. fitted values.** The scaled residuals plotted against
    predicted detection rates should show no systematic trend. A funnel shape
    or curvature indicates that the variance structure or the functional form
-   of the linear predictor is wrong.
+   of the linear predictor is wrong. A U-shape (residuals large at both
+   extremes of the fitted range) often means the true relationship between a
+   covariate and detection is nonlinear. Adding a quadratic term may help.
 
 3. **Dispersion test.** The observed residual variance is compared against the
    distribution of variances from simulated data sets generated under the
    fitted model. The observed value (red line) should fall within the
-   simulated distribution. A dispersion ratio near 1.0 is ideal.
+   simulated distribution. A dispersion ratio near 1.0 is ideal. Ratios
+   above 1.5 usually indicate missing covariates or unmodelled spatial
+   structure. Adding a site-level random effect or a spatial term often
+   brings the ratio back toward 1. Ratios below 0.7 suggest the model is
+   overfitting: it predicts more variation than exists, which can happen
+   with too many random effects relative to the number of groups.
 
 4. **Outlier test.** Extreme residuals are compared against their expected
    frequency under the model. An excess of outliers suggests that some sites
-   behave very differently from the model's predictions.
+   behave very differently from the model's predictions. Common causes:
+   data entry errors (a species recorded at an impossible site), misidentified
+   species, or genuinely unusual sites (a wetland bird at a desert site due
+   to a temporary water source).
+
+When diagnostics disagree (say the QQ plot looks acceptable but the
+dispersion ratio is elevated), trust the dispersion test. The QQ plot is a
+visual assessment that can mask moderate overdispersion when the sample size is
+large (the points scatter tightly around the diagonal even with a ratio of
+1.3). The dispersion test is a quantitative comparison that catches smaller
+departures. Conversely, a clean dispersion ratio with a problematic QQ plot
+usually means the issue is localized: a subset of sites depart from the model,
+but the overall variance is fine. In that case, the outlier test will typically
+flag the problematic sites.
 
 ### Formal hypothesis tests
 
@@ -263,7 +378,7 @@ testUniformity(fit)
 ```
 
 A non-significant p-value means we cannot reject the hypothesis that the PIT
-residuals are uniformly distributed --- no evidence of systematic
+residuals are uniformly distributed, indicating no evidence of systematic
 misspecification.
 
 ```{r test-dispersion}
@@ -291,7 +406,7 @@ systematic misfit. The `group = 1` argument aggregates by site; `group = 2`
 aggregates by visit.
 
 In practice, the diagnostic workflow proceeds in layers. Start with
-`checkModel()` for a visual overview --- the four-panel plot catches most forms
+`checkModel()` for a visual overview, since the four-panel plot catches most forms
 of misspecification at a glance. If something looks off, run the targeted tests
 (`testUniformity()`, `testDispersion()`) to quantify the concern. Finally, use
 `ppcOccu()` with different summary statistics (`"freeman-tukey"`, `"chi-square"`)
@@ -316,14 +431,14 @@ truth
 ```
 
 The Gibbs data augmentation correction that runs after the EM algorithm is
-responsible for this close recovery --- without it, the EM approximation alone
+responsible for this close recovery. Without it, the EM approximation alone
 would attenuate the coefficients toward zero.
 
 
 ## Random effects
 
-When data are grouped --- sites nested within regions, surveys conducted by
-different observers, or species within communities --- random effects capture
+When data are grouped (sites nested within regions, surveys conducted by
+different observers, or species within communities), random effects capture
 the between-group variation that fixed effects cannot. In occupancy models,
 random effects are common on both the occupancy and detection sides.
 
@@ -348,7 +463,7 @@ summary(fit_re)
 ```
 
 INLA parameterizes random effects in terms of precision (the inverse of
-variance). High precision means low between-group variation --- the groups do
+variance). High precision means low between-group variation: the groups do
 not differ substantially after accounting for the covariates. This is expected
 here, since we simulated the data without any grouping structure.
 
@@ -357,7 +472,7 @@ A precision of 4 corresponds to $\sigma = 0.5$, meaning groups differ by about
 1 unit on the logit scale ($\pm 2\sigma$). What does that look like in
 practice? If the mean occupancy is 0.5 (logit = 0), a group-level SD of 0.5
 shifts the logit to roughly $-1$ and $+1$ at the extremes, giving occupancy
-probabilities between about 0.27 and 0.73 --- meaningful ecological variation. A
+probabilities between about 0.27 and 0.73, which is meaningful ecological variation. A
 SD of 0.1, by contrast, keeps all groups between 0.48 and 0.52, which is
 negligible. When reporting results, always convert precision to SD for
 interpretability. Precision values are useful for INLA's internal
@@ -365,13 +480,13 @@ parameterization but carry no ecological intuition.
 
 The supported random effect syntaxes are:
 
-- `(1 | group)` --- random intercept per level of `group`
+- `(1 | group)`: random intercept per level of `group`
 
-- `(x | group)` --- correlated random intercept and slope for covariate `x`
+- `(x | group)`: correlated random intercept and slope for covariate `x`
 
-- `(x || group)` --- uncorrelated random intercept and slope
+- `(x || group)`: uncorrelated random intercept and slope
 
-- `(1 | a/b)` --- nested random effects (random intercept for `b` within `a`)
+- `(1 | a/b)`: nested random effects (random intercept for `b` within `a`)
 
 Random effects work on both the occupancy and detection sides of the model.
 For example, `occu(~ elev + (1 | region), ~ (1 | observer), data = dat)`
@@ -413,6 +528,32 @@ Model averaging is particularly useful when several models have similar WAIC
 values and you want predictions that account for model uncertainty rather than
 conditioning on a single "best" structure.
 
+WAIC approximates out-of-sample predictive accuracy from within-sample data.
+It penalizes model complexity through the effective number of parameters
+$p_{\text{WAIC}}$, which counts how many parameters the model actually uses
+(as opposed to the nominal count). A model with 10 covariates but little data
+support for most of them will have an effective parameter count well below 10,
+because the posterior barely moves from the prior for those parameters. This
+makes WAIC suitable for comparing models of different complexity on a level
+playing field. Unlike DIC, WAIC is fully Bayesian and does not depend on a
+single point estimate. Unlike cross-validation, it does not require refitting
+the model multiple times. The cost is that WAIC relies on the posterior
+predictive distribution being a good approximation to the true predictive
+distribution, which can break down for very small datasets or heavily
+misspecified models.
+
+The choice between model averaging and single-model inference depends on the
+goal. When the goal is prediction (forecasting occupancy at new sites or
+under future conditions), model averaging is safer because it hedges against
+choosing the wrong model. The averaged predictions incorporate uncertainty
+about which model is correct, producing wider but better-calibrated prediction
+intervals. When the goal is inference on specific coefficients (testing
+whether elevation affects occupancy, estimating the magnitude of a land-use
+effect), single-model reporting is clearer. Model-averaged coefficients
+are a weighted mixture of estimates from models that may define the coefficient
+differently (present in some models, absent in others), and the resulting
+estimate lacks a clean interpretation.
+
 When interpreting the `delta` column (WAIC difference from the best model),
 standard rules of thumb from Burnham and Anderson (2002) apply: a delta below 2
 means the models are essentially indistinguishable given the data, and model
@@ -427,7 +568,7 @@ context and sample size matter.
 
 For out-of-sample validation, pass `k.fold` during fitting:
 
-```{r kfold, eval = FALSE}
+```{r kfold}
 fit_cv <- occu(~ occ_x1 + occ_x2, ~ det_x1, data = sim$data,
                k.fold = 5, verbose = 0)
 fit_cv$k.fold
@@ -456,6 +597,30 @@ their sample means, and computes predicted occupancy probabilities with 95%
 credible intervals. The `plot()` method produces a ribbon plot with the
 posterior mean and credible band. Because `occ_x1` has a negative coefficient,
 the plot shows occupancy declining from left to right.
+
+The nonlinearity of the logit link means that the "effect size" on the
+probability scale depends on where you are on the curve. Near the center
+($\psi \approx 0.5$, logit $\approx 0$), the curve is steep: a unit change in
+a covariate produces the largest change in probability. Near the extremes
+($\psi$ close to 0 or 1), the curve flattens: the same unit change has a
+smaller effect because the probability is already near its boundary. A
+coefficient of $-0.8$ drops occupancy from 0.62 to 0.43 starting at a logit
+of 0.5 (a 19 percentage point change), but only from 0.12 to 0.07 starting at
+a logit of $-2$ (a 5 percentage point change). Marginal effect plots show
+this directly: the slope of the curve varies across the covariate range, and
+the credible band widens where data are sparse.
+
+A second distinction is between prediction at observed sites and prediction at
+new sites. Prediction at observed sites uses the fitted values from the model,
+which interpolate within the range and distribution of the training data. This
+is safe, since the model has seen data in this region and the predictions are
+anchored. Prediction at new sites with covariate values outside the observed
+range is extrapolation. The logit link constrains predictions to $[0, 1]$, so
+you will never get a negative probability, but the extrapolated values rely
+entirely on the assumed linear relationship on the logit scale continuing
+beyond the data. If the true relationship is nonlinear (saturating, threshold,
+or hump-shaped), extrapolation will be wrong. Report predictions beyond the
+covariate range with appropriate caution.
 
 Marginal effects differ from raw coefficient interpretation in an important way.
 The coefficients are on the logit scale, where a one-unit change always
@@ -491,6 +656,363 @@ predict(fit, terms = "occ_x1 [-2:2 by=0.5]")
 ```
 
 
+## Spatial models
+
+When sites are distributed across a landscape, their occupancy states may be
+spatially correlated: nearby sites share environmental conditions that
+covariates do not fully capture. Ignoring this spatial dependence inflates
+confidence in the fixed-effect estimates and can bias predictions.
+
+INLAocc handles spatial autocorrelation by adding a Gaussian random field to
+the occupancy linear predictor. The field is approximated via the SPDE
+(Stochastic Partial Differential Equations) approach, which constructs a
+triangulation mesh over the study area and estimates the spatial correlation
+structure from the data.
+
+To fit a spatial model, pass coordinates to the `spatial` argument:
+
+```{r spatial-sim}
+sim_sp <- simulate_occu(N = 300, J = 4, n_occ_covs = 1, n_det_covs = 1,
+                        beta_occ = c(0.5, -0.8),
+                        beta_det = c(0, -0.5),
+                        spatial_range = 0.3, seed = 42)
+```
+
+First, check whether spatial structure is present by fitting a non-spatial
+model and testing the residuals:
+
+```{r spatial-moran}
+fit_nospatial <- occu(~ occ_x1, ~ det_x1, data = sim_sp$data, verbose = 0)
+moranI(fit_nospatial)
+```
+
+A significant p-value (below 0.05) means the residuals are more spatially
+clustered than expected under independence. The non-spatial model treats each
+site as exchangeable, but in reality nearby sites share unmeasured conditions
+(soil type, microclimate, disturbance history) that make their occupancy
+states more similar than the covariates alone predict. This leftover
+correlation violates the independence assumption and makes the standard errors
+on the fixed effects too narrow.
+
+Now fit the spatial model:
+
+```{r spatial-fit}
+fit_spatial <- occu(~ occ_x1, ~ det_x1, data = sim_sp$data,
+                    spatial = sim_sp$data$coords, verbose = 0)
+summary(fit_spatial)
+```
+
+The spatial output includes two additional parameters beyond the fixed effects.
+The **Range** parameter is the distance at which spatial correlation drops to
+roughly 0.1 (the "practical range" of the Matern field). If Range is estimated
+at 0.3 in a unit square, sites closer than 0.3 coordinate units are strongly
+correlated and sites farther apart are nearly independent. The **Stdev**
+parameter quantifies how much spatial variation exists after accounting for the
+covariates. A large Stdev relative to the fixed-effect magnitudes means the
+spatial field dominates the occupancy surface; a small Stdev means the
+covariates explain most of the pattern and the spatial component is a minor
+correction.
+
+Compare the fixed effects between the two fits. The spatial model's credible
+intervals for `occ_x1` should be wider than those from the non-spatial model.
+This is not a loss of precision; it is more honest uncertainty. The
+non-spatial model underestimated uncertainty by ignoring the positive
+correlation between nearby sites, which inflated the effective sample size.
+The spatial model corrects this. Verify that the spatial field absorbed the
+autocorrelation:
+
+```{r spatial-moran-check}
+moranI(fit_spatial)
+```
+
+A non-significant Moran's I (p-value above 0.05) confirms that the spatial
+model captured the autocorrelation structure. The residuals now behave as if
+they came from spatially independent sites, which is what the downstream
+inference assumes.
+
+Compare the two models:
+
+```{r spatial-compare}
+compare_models(non_spatial = fit_nospatial, spatial = fit_spatial, criterion = "waic")
+```
+
+The spatial model should have a lower WAIC, confirming that the spatial
+component is justified by the data. A large delta WAIC (above 10) is typical
+when the true data-generating process includes spatial correlation, since the
+non-spatial model pays a heavy price for misattributing spatially structured
+variation to noise.
+
+### Mapping occupancy
+
+The spatial model estimates a continuous occupancy surface across the study
+area. The `occuMap()` function projects this surface onto a regular grid and
+overlays the observed detection status at each site, producing a
+publication-quality map in a single call:
+
+```{r spatial-map, fig.height = 5}
+occuMap(fit_spatial)
+```
+
+The color gradient shows predicted occupancy probability interpolated between
+survey locations. Filled circles mark sites where the species was detected at
+least once; open circles mark sites where it was never observed. Sites with
+high predicted occupancy but no detections are candidates for additional
+survey effort, because the model believes the species is likely present but
+imperfect detection means it was missed.
+
+The map also reveals spatial patterns that the covariates alone cannot
+explain. If the occupancy surface varies smoothly across the landscape in
+ways that do not track the included covariates, the spatial random field is
+picking up unmeasured environmental gradients (soil type, microclimate,
+historical land use) that influence occupancy. This is useful information:
+it points toward covariates that could improve the model if they were
+measured, and it flags regions where extrapolation from covariates alone
+would be misleading.
+
+Pass `type = "sd"` to map posterior uncertainty instead of the mean, or
+`type = "all"` for a side-by-side panel of both. For full control over the
+SPDE mesh, PC priors for the spatial range and variance, areal (CAR/BYM2)
+models, and spatially varying coefficients, see
+`vignette("spatial-models")`.
+
+
+## Multi-species models
+
+When multiple species are surveyed at the same sites, fitting each species
+independently wastes information. A community occupancy model shares
+information across species through a hierarchical prior: species-level
+coefficients are drawn from a common distribution, which acts as a regularizer.
+Rare species with few detections benefit most, since their estimates are pulled
+toward the community mean rather than being driven to extreme values by sparse
+data.
+
+```{r ms-sim}
+sim_ms <- simMsOcc(N = 200, J = 4, n_species = 10, seed = 42)
+```
+
+Fit the community model by adding `multispecies = TRUE`:
+
+```{r ms-fit}
+fit_ms <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data,
+               multispecies = TRUE, verbose = 0)
+summary(fit_ms)
+```
+
+The summary reports two layers of output. The community-level means
+($\mu_\beta$, $\mu_\alpha$) describe the response of a typical species in the
+assemblage: a positive community mean for `occ_x1` means species in this
+community tend to occur more frequently where `occ_x1` is high. The
+community-level standard deviations ($\sigma_\beta$, $\sigma_\alpha$) describe
+how much species differ from this average. A large $\sigma$ means species
+respond heterogeneously to the covariate, some positively, some negatively.
+Below the community summary, per-species estimates show each species' own
+intercept and slope.
+
+The shrinkage effect is visible in the per-species estimates. Species detected
+at many sites have estimates close to their individual maximum-likelihood
+values, because the data are informative enough that the community prior barely
+pulls them. Species detected at only a handful of sites have estimates pulled
+substantially toward the community mean. Without this shrinkage, a species
+detected at 3 out of 200 sites would get an occupancy estimate near zero with
+a huge standard error. The hierarchical model borrows strength from the other
+9 species to produce a more stable estimate, at the cost of some bias toward
+the community average. This bias-variance tradeoff is almost always favorable
+when species have fewer than about 20 detections.
+
+Estimated species richness at each site accounts for imperfect detection:
+
+```{r ms-richness}
+r <- richness(fit_ms)
+head(r)
+```
+
+Richness here is the sum of estimated occupancy probabilities across species at
+each site. A site where 7 species were detected but estimated richness is 8.3
+has a detection shortfall of about 1.3 species; at least one species is
+likely present but was not observed during any visit. Sites where the gap
+between naive richness (count of detected species) and estimated richness is
+large are candidates for additional survey effort.
+
+A histogram of estimated richness across sites shows the spatial distribution
+of diversity:
+
+```{r ms-richness-hist, fig.height = 4}
+hist(r$richness, breaks = 15, col = "steelblue", border = "white",
+     main = "Estimated species richness", xlab = "Species richness",
+     ylab = "Number of sites")
+abline(v = mean(r$richness), lty = 2, lwd = 2, col = "firebrick")
+```
+
+The dashed line marks the mean estimated richness across sites. The spread
+of the histogram reflects spatial heterogeneity in the community: sites in
+favorable habitat support more species, while sites at the margins harbor
+fewer. This distribution is already corrected for imperfect detection ---
+the naive species count (number of species detected at least once) would
+underestimate richness at every site, shifting the entire histogram to the
+left.
+
+A coefficient forest plot shows how species differ in their responses:
+
+```{r ms-plot, fig.height = 6}
+plot(fit_ms)
+```
+
+The forest plot orders species by their estimated occupancy intercept (or slope,
+depending on the panel). Each horizontal line is a 95% credible interval for
+one species' coefficient. Species whose intervals cross zero show no detectable
+response to the covariate. The spread of the intervals around the community
+mean (vertical dashed line) reflects the community-level standard deviation. A
+tight cluster means species respond similarly; a wide spread means the
+community-level covariate effect masks substantial species-level heterogeneity.
+
+For latent factor models, spatial factor models, and JSDMs, see
+`vignette("multi-species")`.
+
+
+## Integrated models
+
+When a species is monitored by more than one survey program (structured
+point counts at a fixed grid of sites, camera traps running continuously at a
+different set of locations, citizen-science checklists scattered across the
+broader landscape), each program captures the same underlying occupancy
+state through a different detection filter. Analysing the programs separately
+wastes information. An integrated occupancy model links them through a shared
+occupancy layer while estimating source-specific detection probabilities.
+
+The `simIntOcc()` function generates data from two sources that differ in
+detection and in the sites they cover:
+
+```{r int-sim}
+sim_int <- simIntOcc(
+  N_total  = 200,
+  n_data   = 2,
+  J        = c(4, 3),
+  n_shared = 30,
+  beta_occ = c(0.5, 0.3),
+  beta_det = list(c(0.2, -0.4), c(-0.5, 0.3)),
+  seed     = 42
+)
+```
+
+Source 1 conducts 4 visits per site with moderately high baseline detection
+(intercept 0.2 on the logit scale, roughly 55%). Source 2 conducts only 3
+visits with lower baseline detection (intercept $-0.5$, roughly 38%). The two
+sources also respond differently to their detection covariates: source 1's
+detection degrades with its covariate ($-0.4$), while source 2's detection
+improves ($+0.3$). Thirty sites are surveyed by both programs, providing
+direct calibration between the two detection processes.
+
+Fit the integrated model by setting `integrated = TRUE` and passing a list
+of per-source detection formulas:
+
+```{r int-fit}
+fit_int <- occu(~ occ_x1, det.formula = list(~ det_x1, ~ det_x1),
+                data = sim_int$data, integrated = TRUE, verbose = 0)
+summary(fit_int)
+```
+
+The output reports a single set of occupancy coefficients (the shared
+ecological state) alongside separate detection summaries for each source.
+Compare the detection intercepts: source 1 should be estimated near 0.2 and
+source 2 near $-0.5$, reflecting their different survey protocols. The
+occupancy estimate benefits from the combined information: sites surveyed
+by both programs contribute detections from both, and sites surveyed by only
+one program still borrow strength from the shared occupancy layer.
+
+To see the benefit of integration, compare to a single-source analysis. Fit
+source 1 alone:
+
+```{r int-compare}
+data_s1 <- list(
+  y        = sim_int$data$y[[1]],
+  occ.covs = sim_int$data$occ.covs[sim_int$data$sites[[1]], , drop = FALSE],
+  det.covs = sim_int$data$det.covs[[1]]
+)
+fit_s1 <- occu(~ occ_x1, ~ det_x1, data = data_s1, verbose = 0)
+
+cat(sprintf("Integrated occ_x1: %.3f (%.3f, %.3f)\n",
+            coef(fit_int, "occupancy")[2],
+            confint(fit_int, "occupancy")[2, 1],
+            confint(fit_int, "occupancy")[2, 2]))
+cat(sprintf("Source 1 only occ_x1: %.3f (%.3f, %.3f)\n",
+            coef(fit_s1, "occupancy")[2],
+            confint(fit_s1, "occupancy")[2, 1],
+            confint(fit_s1, "occupancy")[2, 2]))
+```
+
+The integrated model's credible interval for the occupancy slope should be
+narrower, because the extra information from source 2 tightens the estimate. The
+gain is largest when the two sources cover complementary regions of the
+landscape, because the integrated model can estimate occupancy at sites
+surveyed by only one program while using the shared sites to calibrate the
+detection processes against each other.
+
+For the full treatment of integrated models, including spatial integration,
+per-source random effects, and diagnostics for multi-source data, see
+`vignette("integrated-models")`.
+
+
+## A realistic simulation
+
+The examples above use abstract covariates drawn from standard normal
+distributions. A more realistic scenario helps build intuition for what these
+numbers mean in a field setting. Consider a single-species survey for a
+forest-dwelling bird across a fragmented landscape:
+
+```{r realistic}
+set.seed(7)
+N_real <- 150
+J_real <- 3
+
+# Site-level covariates: proportion of forest cover (0-1) and elevation (m)
+forest <- runif(N_real, 0, 1)
+elev   <- rnorm(N_real, 800, 200)
+
+# Visit-level covariate: survey duration in minutes (varies by visit)
+duration <- matrix(rnorm(N_real * J_real, 60, 15), N_real, J_real)
+
+# Standardize for modeling
+forest_s   <- scale(forest)[, 1]
+elev_s     <- scale(elev)[, 1]
+duration_s <- (duration - mean(duration)) / sd(duration)
+
+# Ecological truth: species prefers forests, avoids high elevation
+psi_logit <- 0.2 + 1.2 * forest_s - 0.6 * elev_s
+psi_true  <- 1 / (1 + exp(-psi_logit))
+z_true    <- rbinom(N_real, 1, psi_true)
+
+# Detection: improves with longer surveys
+p_logit  <- -0.3 + 0.5 * duration_s
+p_true   <- 1 / (1 + exp(-p_logit))
+y_real   <- matrix(NA, N_real, J_real)
+for (i in seq_len(N_real)) {
+  for (j in seq_len(J_real)) {
+    y_real[i, j] <- rbinom(1, 1, z_true[i] * p_true[i, j])
+  }
+}
+
+real_data <- occu_format(
+  y = y_real,
+  occ.covs = data.frame(forest = forest_s, elev = elev_s),
+  det.covs = list(duration = duration_s)
+)
+
+fit_real <- occu(~ forest + elev, ~ duration, data = real_data, verbose = 0)
+summary(fit_real)
+```
+
+The occupancy coefficients should recover the generating values: a strong
+positive effect of forest cover ($\beta \approx 1.2$) and a moderate
+negative effect of elevation ($\beta \approx -0.6$). The detection intercept
+of $-0.3$ (about 43% per visit at mean duration) and the positive duration
+slope confirm that longer surveys improve detection, exactly as a field
+ecologist would expect. This kind of sanity check (simulating from
+parameters that match your study system, then verifying recovery) is worth
+doing before fitting any real-data model. If the model cannot recover known
+parameters under realistic conditions, it will not produce trustworthy
+estimates from your actual survey.
+
+
 ## S3 methods
 
 Fitted `occu_inla` objects support the standard R model interface, making them
@@ -519,7 +1041,7 @@ interoperable with tools you already know:
 This vignette covered the core single-species workflow. A recommended analysis
 sequence: start with the intercept-only model to establish baseline occupancy
 and detection rates, then add covariates guided by ecological hypotheses. Check
-diagnostics at each step --- a model that fits well without covariates but fails
+diagnostics at each step. A model that fits well without covariates but fails
 after adding them suggests a misspecified functional form (e.g., a quadratic
 effect forced through a linear term). Add random effects only when the study
 design includes genuine grouping structure, not as a generic variance sponge.
@@ -537,6 +1059,10 @@ interface:
 - **Multi-species models.** Community occupancy models that share information
   across species, with optional latent factor structure. See
   `vignette("multi-species")`.
+
+- **Integrated models.** When multiple survey programs monitor the same species,
+  combine them into a single analysis with source-specific detection. See
+  `vignette("integrated-models")`.
 
 - **Diagnostics deep dive.** The full suite of simulation-based diagnostics,
   including spatial residual analysis, temporal autocorrelation tests, and

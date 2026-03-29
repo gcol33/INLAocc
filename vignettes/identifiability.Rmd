@@ -27,8 +27,8 @@ Occupancy models have a fundamental identifiability challenge: a site with no
 detections could be truly unoccupied, or it could be occupied with low detection
 probability. Separating occupancy from detection requires enough visits per site
 and enough variation in detection/non-detection patterns across sites and visits.
-Without these, the model cannot determine which process --- occupancy or
-detection --- is responsible for the observed data, and parameter estimates
+Without these, the model cannot determine which process (occupancy or
+detection) is responsible for the observed data, and parameter estimates
 become unreliable.
 
 When models are not identifiable, parameters have flat posteriors (the data
@@ -36,7 +36,7 @@ cannot distinguish between different parameter values), estimates sit on the
 boundary of the parameter space, or small changes in the data produce large
 changes in estimates. These symptoms are not always obvious. A model can
 converge, return point estimates, and produce confidence intervals that look
-reasonable --- while the estimates are driven almost entirely by the prior or
+reasonable, while the estimates are driven almost entirely by the prior or
 by numerical regularization rather than by the data.
 
 INLAocc provides `checkIdentifiability()` for automated screening of common
@@ -59,7 +59,7 @@ $$L_i = (1 - \psi_i) + \psi_i \prod_{j=1}^{J} (1 - p_{ij})$$
 
 The first term is the probability that the site is truly unoccupied. The second
 is the probability that the site is occupied but the species went undetected on
-every visit. The data cannot distinguish between these two contributions ---
+every visit. The data cannot distinguish between these two contributions;
 both produce the same observation (all zeros).
 
 ### Why one visit is not enough
@@ -68,7 +68,7 @@ With $J = 1$ visit, the likelihood for an undetected site simplifies to:
 
 $$L_i = (1 - \psi_i) + \psi_i (1 - p_i) = 1 - \psi_i p_i$$
 
-Only the product $\psi_i p_i$ is identifiable --- not $\psi_i$ and $p_i$
+Only the product $\psi_i p_i$ is identifiable, not $\psi_i$ and $p_i$
 individually. Any combination of occupancy and detection that produces the
 same product fits the data equally well. A species with 80% occupancy and 50%
 detection looks identical to one with 40% occupancy and 100% detection.
@@ -117,7 +117,7 @@ of unique detection histories.
 
 ### Problematic data
 
-Now simulate data with known identifiability issues --- few sites, few visits,
+Now simulate data with known identifiability issues: few sites, few visits,
 and very low detection:
 
 ```{r prefit-bad}
@@ -188,7 +188,7 @@ checkIdentifiability(fit_confound)
 Why this is problematic: if a covariate affects both occupancy and detection,
 the model cannot determine which process it operates through. The estimated
 effect gets split arbitrarily between the two submodels, and the split depends
-on the data realization, the starting values, and the prior --- not on the
+on the data realization, the starting values, and the prior, not on the
 underlying biology.
 
 **Fixes:**
@@ -215,7 +215,7 @@ model is not identifiable for your application.
 The simplest stress test simulates multiple datasets from the same parameters
 and checks whether the estimates are centered on the truth:
 
-```{r recovery, eval = FALSE}
+```{r recovery}
 n_sims <- 20
 results <- data.frame()
 
@@ -231,10 +231,10 @@ for (i in 1:n_sims) {
 
   results <- rbind(results, data.frame(
     sim = i,
-    beta0_occ = cf$occ$mean[1],
-    beta1_occ = cf$occ$mean[2],
-    alpha0_det = cf$det$mean[1],
-    alpha1_det = cf$det$mean[2]
+    beta0_occ = cf$occ[1],
+    beta1_occ = cf$occ[2],
+    alpha0_det = cf$det[1],
+    alpha1_det = cf$det[2]
   ))
 }
 
@@ -246,7 +246,7 @@ Good recovery: the means across simulations should be close to the true values
 (0.5, -0.8, 0, -0.5). Substantial bias would indicate an identifiability
 problem under these conditions.
 
-You can also check coverage --- the proportion of simulations where the 95%
+You can also check coverage: the proportion of simulations where the 95%
 credible interval contains the true value. Nominal coverage should be close
 to 0.95.
 
@@ -255,7 +255,7 @@ to 0.95.
 A natural question is: how many sites do I need? Simulate across a range of
 sample sizes to find the threshold where estimation breaks down:
 
-```{r vary-N, eval = FALSE}
+```{r vary-N}
 for (N in c(50, 100, 200, 500)) {
   sim_i <- simulate_occu(N = N, J = 4,
                          beta_occ = c(0.5, -0.8),
@@ -264,8 +264,8 @@ for (N in c(50, 100, 200, 500)) {
                          seed = 42)
 
   fit_i <- occu(~ occ_x1, ~ det_x1, data = sim_i$data, verbose = 0)
-  est <- coef(fit_i)$occ$mean[2]
-  se <- coef(fit_i)$occ$sd[2]
+  est <- coef(fit_i)$occ[2]
+  se <- fit_i$occ_fit$summary.fixed$sd[2]
 
   cat(sprintf("N = %3d: beta1 = %6.2f (SE = %.2f, true = -0.80)\n",
               N, est, se))
@@ -282,7 +282,7 @@ Detection probability is the single most important factor for occupancy model
 identifiability. Test how your model behaves across a range of detection
 levels:
 
-```{r vary-det, eval = FALSE}
+```{r vary-det}
 for (det_int in c(-2, -1, 0, 1)) {
   sim_i <- simulate_occu(N = 200, J = 4,
                          beta_occ = c(0.5, -0.8),
@@ -294,7 +294,7 @@ for (det_int in c(-2, -1, 0, 1)) {
   naive_p <- mean(sim_i$data$y, na.rm = TRUE)
 
   cat(sprintf("det_int = %2d (naive p = %.2f): beta1 = %6.2f (true = -0.80)\n",
-              det_int, naive_p, coef(fit_i)$occ$mean[2]))
+              det_int, naive_p, coef(fit_i)$occ[2]))
 }
 ```
 
@@ -307,7 +307,7 @@ down.
 
 The same approach works for the number of visits:
 
-```{r vary-J, eval = FALSE}
+```{r vary-J}
 for (J in c(2, 3, 4, 6, 10)) {
   sim_i <- simulate_occu(N = 200, J = J,
                          beta_occ = c(0.5, -0.8),
@@ -316,8 +316,8 @@ for (J in c(2, 3, 4, 6, 10)) {
                          seed = 42)
 
   fit_i <- occu(~ occ_x1, ~ det_x1, data = sim_i$data, verbose = 0)
-  est <- coef(fit_i)$occ$mean[2]
-  se <- coef(fit_i)$occ$sd[2]
+  est <- coef(fit_i)$occ[2]
+  se <- fit_i$occ_fit$summary.fixed$sd[2]
 
   cat(sprintf("J = %2d: beta1 = %6.2f (SE = %.2f)\n", J, est, se))
 }
@@ -378,7 +378,7 @@ regularization. This regularization can mask identifiability issues in a way
 that is easy to miss.
 
 A weakly identified parameter with a strong prior will produce a posterior that
-looks well-behaved --- finite mean, reasonable standard deviation, no boundary
+looks well-behaved: finite mean, reasonable standard deviation, no boundary
 issues. But the posterior is driven by the prior, not by the data. The model
 appears to work, but the estimates reflect your assumptions rather than your
 observations.
@@ -392,7 +392,7 @@ standard deviation is close to the prior standard deviation.
 This concern is less acute with INLAocc's default weakly informative priors,
 which are intentionally vague. But it becomes important when using informative
 priors to "fix" convergence issues. If a model only converges with a tight
-prior on a parameter, that parameter is not identified by the data --- the
+prior on a parameter, that parameter is not identified by the data. The
 prior is doing the work. In that case, the correct response is to simplify
 the model, not to tighten the prior.
 
@@ -400,9 +400,304 @@ A practical test: fit the model twice with different priors (e.g., prior
 SD = 1 vs. prior SD = 5 on the same coefficient). If the posterior changes
 substantially, the data is not constraining that parameter.
 
+## Spatial and factor model identifiability
+
+The identifiability challenges described above (the occupancy--detection
+trade-off, covariate confounding, the role of priors) all become harder
+when a spatial random effect is added to the model. Spatial occupancy models
+introduce additional parameters (the spatial range $\rho$ and marginal
+standard deviation $\sigma$ of the Gaussian field) that must be estimated
+from the same binary detection/non-detection data. The binary nature of the
+observations is the core difficulty: continuous Gaussian data would provide
+far more information per observation about the correlation structure, but
+presence/absence data collapses the rich information in spatial fields down
+to zeros and ones.
+
+### Weak identifiability of spatial range and variance
+
+The practical correlation range $\rho$ and the marginal variance $\sigma^2$
+of the Matern field are jointly weakly identifiable in occupancy models. The
+reason is intuitive: a spatial field with short range and high variance can
+produce similar patterns in occupancy probability as one with long range and
+low variance, once the field passes through the logit link function and is
+then observed as binary data. The likelihood surface over $(\rho, \sigma^2)$
+is typically a broad ridge rather than a sharp peak.
+
+This weak identifiability has concrete consequences. Without regularization,
+the posterior for $\rho$ can be extremely diffuse, sometimes spanning orders
+of magnitude. The marginal variance $\sigma^2$ may inflate to absorb
+variation that belongs in the fixed effects, or collapse toward zero if the
+prior pulls it there. The fixed-effect coefficients $\boldsymbol{\beta}$ may
+shift as the spatial field takes over (or gives up) explanatory power.
+
+INLA's penalized complexity (PC) priors provide essential regularization for
+these parameters. The PC prior for the range is specified as P(range < $r_0$)
+= $p$, and for the standard deviation as P($\sigma$ > $s_0$) = $p$. These
+priors encode a "base model" principle: the prior shrinks toward no spatial
+effect (infinite range, zero variance), requiring the data to justify spatial
+complexity. In contrast, MCMC-based spatial occupancy models (such as those
+in spOccupancy) typically use diffuse inverse-Gamma or uniform priors on
+these parameters, which provide little regularization and can lead to poor
+mixing and slow convergence when the likelihood surface is flat.
+
+The PC prior is not a fix for non-identifiability; it is a principled way
+to handle weak identifiability. The posterior for $\rho$ will still be wide
+when the data provide limited spatial information, but it will not
+degenerate. The key diagnostic is the same as for any weakly identified
+parameter: compare the posterior to the prior. If they are nearly identical,
+the data is not informing the spatial parameters, and the model's spatial
+predictions are driven by the prior choice rather than by the observations.
+
+### Sign-switching and rotational invariance in factor models
+
+Latent factor models (fitted via `occu()` with `n.factors`) have a
+fundamentally different identifiability challenge: the likelihood is
+invariant to sign flips and rotations of the latent factors. If
+$\boldsymbol{\Lambda}$ is the species loading matrix and $\mathbf{w}$ is a
+vector of latent factors, then replacing $\boldsymbol{\Lambda}$ with
+$\boldsymbol{\Lambda} \mathbf{R}$ and $\mathbf{w}$ with $\mathbf{R}^{-1}
+\mathbf{w}$ for any orthogonal rotation matrix $\mathbf{R}$ leaves the
+likelihood unchanged. The simplest case is sign-switching: multiplying a
+factor by $-1$ and flipping the corresponding column of the loading matrix
+produces identical predictions.
+
+This rotational invariance does not affect predictions. The predicted
+occupancy probability $\hat{\psi}_i$ and the species correlation matrix
+implied by the factor model are invariant to the rotation. What it does
+affect is interpretation: the individual factor loadings and the latent
+factor values are not uniquely determined. Across MCMC samples (or across
+multiple fitting runs), a factor may flip sign or blend with other factors,
+making it impossible to interpret a single factor as "the temperature axis"
+or "the moisture axis" without post-hoc identification constraints.
+
+INLA-based factor models sidestep the worst manifestations of this problem
+because INLA does not sample from the joint posterior. The Laplace
+approximation produces a single posterior mode, and the identifiability
+constraint (upper-triangular loading matrix with positive diagonal entries)
+pins down a unique solution. However, the underlying weakness remains: if
+the data do not strongly separate the factors, the posterior for the loading
+matrix will be diffuse, the constraint will do more work than the data, and
+the factor interpretation will be fragile.
+
+Practical advice for factor models: (1) compare models with different
+numbers of factors using WAIC via `waicOccu()` to determine how many factors
+the data can support, (2) do not over-interpret individual factor loadings
+unless they are consistent across subsets of the data, and (3) focus on the
+derived quantities (species correlations, predicted occupancy) that are
+invariant to rotations.
+
+### Does spatial structure actually help?
+
+Adding a spatial random effect increases model complexity substantially. The
+SPDE mesh may add hundreds of latent parameters, and the two hyperparameters
+($\rho$, $\sigma$) must be estimated. Before trusting a spatial model, you
+should check whether the added complexity is justified.
+
+The first check is the residual spatial autocorrelation test. Fit the model
+without the spatial effect and run `moranI()` on the result. If Moran's I
+is not significantly positive, there is no evidence of spatial
+autocorrelation in the residuals, and the spatial term is unnecessary. The
+second check is model comparison: fit both the spatial and non-spatial
+models and compare them via `waicOccu()`. A lower WAIC for the spatial
+model indicates that the spatial field improves predictive performance; a
+similar or higher WAIC means the spatial field is not paying for its
+complexity.
+
+A subtler issue is spatial confounding: the spatial field may absorb the
+effect of a spatially structured covariate, attenuating the estimated
+covariate coefficient toward zero. This happens when a covariate like
+elevation is itself spatially smooth. The spatial field and the covariate
+compete for the same variation, and the flexible random field tends to win.
+The symptom is a covariate coefficient that is significant in the
+non-spatial model but shrinks toward zero in the spatial model. This is not
+always a problem (the spatial model may be giving a more honest estimate by
+accounting for unmeasured confounders), but it requires careful thought
+about whether the covariate effect or the spatial field is the quantity of
+scientific interest.
+
+### Worked example: spatial identifiability stress test
+
+The following simulation demonstrates when spatial parameters are
+identifiable and when they are not. We simulate data with a known spatial
+range ($\rho = 0.3$ on a unit square), then recover it under varying sample
+sizes and spatial designs.
+
+```{r spatial-recovery-setup}
+library(INLAocc)
+
+# Helper: fit spatial model and extract range estimate
+recover_range <- function(N, spatial_range = 0.3, seed = 1,
+                          clustered = FALSE) {
+  set.seed(seed)
+
+  sim <- simulate_occu(
+    N = N, J = 4,
+    n_occ_covs = 1, n_det_covs = 1,
+    beta_occ = c(0.5, -0.8),
+    beta_det = c(0, -0.5),
+    spatial_range = spatial_range, spatial_var = 1,
+    seed = seed
+  )
+
+  # Replace coordinates with clustered design if requested
+  if (clustered) {
+    n_clusters <- 5
+    centers <- matrix(runif(n_clusters * 2, 0.2, 0.8), n_clusters, 2)
+    cluster_id <- sample(n_clusters, N, replace = TRUE)
+    new_coords <- centers[cluster_id, ] + matrix(rnorm(N * 2, sd = 0.02), N, 2)
+    sim$data$coords <- new_coords
+  }
+
+  fit <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+              spatial = sim$data$coords,
+              spde.args = list(prior.range = c(0.3, 0.5),
+                               prior.sigma = c(1, 0.05)),
+              verbose = 0)
+
+  # Extract spatial hyperparameters
+  hyp <- fit$occ_fit$summary.hyperpar
+  range_row <- grep("[Rr]ange", rownames(hyp))
+  sigma_row <- grep("[Ss]tdev|[Ss]igma", rownames(hyp))
+
+  list(
+    N = N,
+    range_est  = if (length(range_row)) hyp$mean[range_row[1]] else NA,
+    range_sd   = if (length(range_row)) hyp$sd[range_row[1]] else NA,
+    sigma_est  = if (length(sigma_row)) hyp$mean[sigma_row[1]] else NA,
+    sigma_sd   = if (length(sigma_row)) hyp$sd[sigma_row[1]] else NA,
+    beta1_est  = coef(fit)$occ[2],
+    beta1_se   = fit$occ_fit$summary.fixed$sd[2]
+  )
+}
+```
+
+#### Effect of sample size on spatial parameter recovery
+
+With sites spread uniformly across the domain, more sites means more pairs
+at each distance lag, which is what informs the range parameter.
+
+```{r spatial-recovery-N}
+cat(sprintf("%-6s  %-10s  %-10s  %-10s  %-10s\n",
+            "N", "range_est", "range_SD", "sigma_est", "beta1"))
+cat(strrep("-", 56), "\n")
+
+for (N in c(50, 100, 200, 400)) {
+  res <- recover_range(N, seed = 42)
+  cat(sprintf("%-6d  %-10.3f  %-10.3f  %-10.3f  %-10.3f\n",
+              res$N, res$range_est, res$range_sd, res$sigma_est, res$beta1_est))
+}
+```
+
+With 50 sites, the range estimate has a wide posterior and may differ
+substantially from the truth ($\rho = 0.3$). By 200 sites, the estimate
+stabilises and the posterior SD shrinks. The covariate coefficient
+(`beta1`) is reasonably well recovered throughout because the spatial field
+absorbs the spatial structure rather than the covariate effect, but only
+if the covariate is not itself spatially smooth.
+
+#### Clustered vs. spread designs
+
+Spatial identifiability depends not just on the number of sites but on their
+spatial arrangement. Clustered designs (where sites are grouped in a few
+locations, as is common in field surveys along roads or trails) provide
+limited information about the range parameter because most site pairs are
+either very close (within-cluster) or very far (between-cluster), with few
+pairs at intermediate distances.
+
+```{r spatial-recovery-clustered}
+cat(sprintf("%-10s  %-6s  %-10s  %-10s\n",
+            "Design", "N", "range_est", "range_SD"))
+cat(strrep("-", 42), "\n")
+
+for (N in c(100, 200)) {
+  res_spread    <- recover_range(N, seed = 42, clustered = FALSE)
+  res_clustered <- recover_range(N, seed = 42, clustered = TRUE)
+
+  cat(sprintf("%-10s  %-6d  %-10.3f  %-10.3f\n",
+              "spread", N, res_spread$range_est, res_spread$range_sd))
+  cat(sprintf("%-10s  %-6d  %-10.3f  %-10.3f\n",
+              "clustered", N, res_clustered$range_est, res_clustered$range_sd))
+}
+```
+
+The clustered design consistently produces wider posteriors for the range
+parameter. When sites are concentrated in a few clusters, the spatial field
+is effectively informed only at two distance scales (near-zero and the
+between-cluster distance), leaving the intermediate range poorly
+constrained. This is a common problem in applied ecology, where logistical
+constraints force clustered sampling. The practical implication is that
+spatial models fit to clustered data should be interpreted with extra
+caution: the spatial predictions may look reasonable, but the estimated
+range and variance are driven more by the prior than by the data.
+
+#### Diagnosing spatial identifiability in practice
+
+For a fitted spatial model, three diagnostics together give a clear picture
+of spatial identifiability:
+
+1. **Prior--posterior comparison for range and variance.** Extract the
+   hyperparameter summary from `fit$occ_fit$summary.hyperpar` and compare
+   the posterior mean and SD to the PC prior specification. If the posterior
+   is nearly as wide as the prior, the data is not informing the spatial
+   parameters.
+
+2. **WAIC comparison.** Fit the model with and without the spatial effect
+   and compare via `waicOccu()`. If the spatial model does not improve WAIC,
+   the spatial field is not contributing to predictive performance and may be
+   absorbing noise.
+
+3. **Coefficient stability.** Compare the fixed-effect estimates between
+   the spatial and non-spatial models. Large shifts suggest spatial
+   confounding: the spatial field is absorbing variation that the non-spatial
+   model attributed to covariates. This does not necessarily mean the spatial
+   model is wrong (it may be giving a less confounded estimate), but the
+   difference should be understood and reported.
+
+```{r spatial-diagnostics-example}
+sim <- simulate_occu(N = 200, J = 4,
+                     n_occ_covs = 1, n_det_covs = 1,
+                     beta_occ = c(0.5, -0.8),
+                     beta_det = c(0, -0.5),
+                     spatial_range = 0.3, seed = 42)
+
+fit_ns <- occu(~ occ_x1, ~ det_x1, data = sim$data, verbose = 0)
+fit_sp <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+               spatial = sim$data$coords, verbose = 0)
+
+# 1. Moran's I on non-spatial residuals
+moranI(fit_ns)
+
+# 2. WAIC comparison
+waic_ns <- waicOccu(fit_ns)
+waic_sp <- waicOccu(fit_sp)
+cat(sprintf("WAIC non-spatial: %.1f\nWAIC spatial:     %.1f\n",
+            waic_ns$WAIC, waic_sp$WAIC))
+
+# 3. Coefficient comparison
+cat(sprintf("\nbeta1 non-spatial: %.3f (SE %.3f)\n",
+            coef(fit_ns)$occ[2], fit_ns$occ_fit$summary.fixed$sd[2]))
+cat(sprintf("beta1 spatial:     %.3f (SE %.3f)\n",
+            coef(fit_sp)$occ[2], fit_sp$occ_fit$summary.fixed$sd[2]))
+cat(sprintf("True beta1:        -0.800\n"))
+
+# 4. Spatial hyperparameters (compare to prior)
+if (!is.null(fit_sp$occ_fit$summary.hyperpar)) {
+  cat("\nSpatial hyperparameters:\n")
+  print(round(fit_sp$occ_fit$summary.hyperpar, 3))
+}
+```
+
+When all three diagnostics align (significant Moran's I in the
+non-spatial model, lower WAIC for the spatial model, and stable covariate
+coefficients), the spatial model is well justified and the spatial
+parameters are at least moderately identifiable. When the diagnostics
+conflict (e.g., Moran's I is significant but WAIC favours the simpler
+model), the spatial structure may be too weak or the sample size too small
+for the model to reliably separate the spatial field from the fixed effects.
+
 ## Summary
 
-Identifiability is not a binary property --- it exists on a continuum from
+Identifiability is not a binary property; it exists on a continuum from
 well-identified (data strongly constrains parameters) to completely
 unidentifiable (data provides no information). Most real datasets fall
 somewhere in between, and the goal is to match model complexity to the

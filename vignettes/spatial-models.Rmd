@@ -26,11 +26,11 @@ knitr::opts_chunk$set(
 Species detection/non-detection data are collected at sites distributed across
 a landscape, and nearby sites tend to share unmeasured environmental conditions.
 When this spatial dependence is ignored, occupancy models treat sites as
-independent replicates --- an assumption that is almost always wrong. The
+independent replicates, an assumption that is almost always wrong. The
 consequences are real: residual spatial autocorrelation inflates effective
 sample size, producing confidence intervals that are too narrow and
 fixed-effect estimates that may be biased. If a covariate of interest is
-itself spatially structured, the bias can be substantial.
+itself spatially structured, the bias compounds.
 
 INLAocc handles spatial structure through the SPDE (Stochastic Partial
 Differential Equations) approximation to a continuous Gaussian random field.
@@ -67,7 +67,7 @@ $$\text{Cov}(w(\mathbf{s}_1), w(\mathbf{s}_2)) = \sigma^2 \frac{2^{1-\nu}}{\Gamm
 
 The three parameters have intuitive interpretations:
 
-- $\sigma^2$ is the **marginal variance** of the spatial field --- how much
+- $\sigma^2$ is the **marginal variance** of the spatial field: how much
   spatial variation there is on the logit-occupancy scale.
 - $\kappa$ is a **scale parameter** that relates to the practical correlation
   range via $\rho = \sqrt{8\nu}/\kappa$. The practical range $\rho$ is the
@@ -86,7 +86,7 @@ $\mathbf{Q}$ scales as $O(n^{3/2})$ in 2D, compared to $O(N^3)$ for the
 dense approach.
 
 
-## Why spatial matters --- a motivating example
+## Why spatial matters: a motivating example
 
 To see what goes wrong when spatial structure is ignored, we simulate data
 with a known spatial field, then fit a model without the spatial term.
@@ -114,9 +114,56 @@ moranI(fit_nospatial)
 
 If Moran's I is significantly positive with a p-value near zero, the residuals are
 spatially autocorrelated. The non-spatial model has left systematic spatial
-structure on the table. This does not just violate an assumption --- it
-means the reported standard errors are too small and the 95% credible
-intervals are too narrow to be trusted.
+structure on the table. This is not just a violated assumption: the
+reported standard errors are too small and the 95% credible intervals
+are too narrow to be trusted.
+
+### Before and after: residual spatial patterns
+
+The semivariogram makes the spatial structure visible. For the non-spatial
+model, we expect the semivariance to increase with distance at short lags
+--- the signature of positive autocorrelation. After fitting a spatial
+model, the variogram should flatten into a horizontal band at the sill.
+
+```{r variogram-before-after, fig.width = 9, fig.height = 4}
+par(mfrow = c(1, 2))
+
+# Non-spatial residual variogram
+vg_before <- variogram(fit_nospatial, n.bins = 12)
+plot(vg_before, main = "Non-spatial model")
+
+# Spatial model (fit below, but we preview the diagnostic)
+fit_spatial_preview <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                            spatial = sim$data$coords, verbose = 0)
+vg_after <- variogram(fit_spatial_preview, n.bins = 12)
+plot(vg_after, main = "Spatial model")
+```
+
+The left panel shows a clear increasing trend: nearby sites have more
+similar residuals than distant sites, exactly the pattern that inflates
+Type I error rates. The right panel is flat; the SPDE field has absorbed
+the autocorrelation.
+
+Beyond visual diagnostics, the consequences for inference are concrete.
+Compare the width of the 95% credible interval for `occ_x1` between the
+two models:
+
+```{r ci-comparison}
+# Non-spatial CI width
+ci_nospatial <- diff(unlist(fit_nospatial$occ_fit$summary.fixed["occ_x1",
+                           c("0.025quant", "0.975quant")]))
+# Spatial CI width
+ci_spatial <- diff(unlist(fit_spatial_preview$occ_fit$summary.fixed["occ_x1",
+                         c("0.025quant", "0.975quant")]))
+cat(sprintf("Non-spatial CI width: %.3f\nSpatial CI width:     %.3f\n",
+            ci_nospatial, ci_spatial))
+```
+
+The spatial model produces wider (more honest) intervals because it
+recognises that spatially correlated sites are not independent replicates.
+The non-spatial model overstates the effective sample size, leading to
+overconfident inference, a common problem in ecological studies where
+sites are clustered along roads, rivers, or elevation gradients.
 
 
 ## Fitting the SPDE model
@@ -129,7 +176,7 @@ fit <- occu(~ occ_x1, ~ det_x1, data = sim$data,
 summary(fit)
 ```
 
-Several things to note:
+What to check in the output:
 
 - **Fixed effects should be recovered well.** The true occupancy intercept is 0.5
   and the true `occ_x1` effect is -0.8. Both credible intervals should contain
@@ -140,8 +187,8 @@ Several things to note:
 - **Intervals are wider than the non-spatial model.** This is correct
   behaviour: accounting for spatial dependence reduces the effective sample
   size, producing more honest uncertainty.
-- **A substantial spatial SD** confirms that the spatial field
-  explains meaningful variation in occupancy.
+- **A large spatial SD** confirms that the spatial field
+  explains real variation in occupancy.
 
 You can extract the spatial range and standard deviation directly:
 
@@ -155,7 +202,7 @@ spatialRange(fit)
 moranI(fit)
 ```
 
-Moran's I should have dropped substantially and should no longer be significant.
+Moran's I should have dropped and should no longer be significant.
 The spatial model has absorbed the autocorrelation.
 
 The empirical semivariogram tells the same story:
@@ -166,7 +213,7 @@ variogram(fit)
 
 A flat line at the sill confirms that no residual spatial trend remains. If
 the variogram still shows an increasing trend at short distances, the mesh may
-be too coarse or the range prior too restrictive --- see the next section.
+be too coarse or the range prior too restrictive (see the next section).
 
 For the full diagnostic panel (residuals, Moran's I, Q-Q plot, DHARMa):
 
@@ -184,11 +231,11 @@ spread across the study area.
 
 You may need manual control when:
 
-- **Sites are clustered** (e.g., along roads or rivers) --- the auto-mesh may
+- **Sites are clustered** (e.g., along roads or rivers), so the auto-mesh may
   waste nodes in empty regions.
-- **The study extent is very large** --- a coarser mesh saves computation.
+- **The study extent is very large**, and a coarser mesh saves computation.
 
-- **You have strong prior knowledge** about the spatial range --- tighter PC
+- **You have strong prior knowledge** about the spatial range, and tighter PC
   priors can stabilise estimation.
 
 Use `occu_spatial()` to pre-build the mesh:
@@ -204,14 +251,14 @@ sp
 
 Then pass the pre-built object to `occu()`:
 
-```{r fit-custom-mesh, eval = FALSE}
+```{r fit-custom-mesh}
 fit <- occu(~ occ_x1, ~ det_x1, data = sim$data, spatial = sp, verbose = 0)
 ```
 
 ### PC priors for the spatial field
 
-The PC (penalizing complexity) priors deserve explanation because they
-directly influence how much spatial structure the model captures.
+The PC (penalizing complexity) priors directly control how much spatial
+structure the model captures.
 
 **`prior.range = c(r0, p)`** encodes $P(\rho < r_0) = p$, where $\rho$ is
 the practical correlation range. This sets a lower bound on the spatial scale:
@@ -224,7 +271,7 @@ the marginal standard deviation of the spatial field. This sets an upper bound
 on the spatial variance: `prior.sigma = c(1, 0.05)` means you believe the
 spatial SD is unlikely to exceed 1 on the logit scale.
 
-The logic behind PC priors is shrinkage toward the **base model** --- in this
+The logic behind PC priors is shrinkage toward the **base model**, in this
 case, no spatial effect at all ($\sigma = 0$). This prevents the spatial field
 from soaking up variation that properly belongs to fixed-effect covariates.
 When in doubt, use weakly informative priors (the defaults) and let the data
@@ -268,7 +315,7 @@ Each map type serves a different purpose:
   regions are candidates for additional survey effort.
 - **`"spatial"`**: the spatial random effect $w(\mathbf{s})$ alone, centred at
   zero. This reveals spatial patterns not explained by the covariates ---
-  essentially, where occupancy is higher or lower than the covariates predict.
+  where occupancy is higher or lower than the covariates predict.
   Symmetric colour scale (blue-white-red) with zero as white.
 - **`"all"`**: a side-by-side panel of `"psi"` and `"sd"`.
 
@@ -276,11 +323,75 @@ All maps overlay observed sites, coloured by whether the species was detected
 (filled circles) or not (open circles). The returned object (invisible)
 contains the gridded values for custom plotting.
 
+### Interpreting uncertainty maps
+
+The posterior SD map (`type = "sd"`) directly informs survey design.
+Uncertainty is driven by three factors:
+
+1. **Distance from observed sites.** The spatial field is interpolated from
+   mesh nodes, so regions far from any site have higher posterior variance.
+   This is the dominant source of uncertainty in most maps.
+2. **Local detection history.** Sites where the species was detected on every
+   visit provide strong evidence for occupancy; sites with mixed or no
+   detections contribute more uncertainty.
+3. **Mesh resolution.** A coarser mesh smooths the spatial field more
+   aggressively, which can reduce apparent uncertainty but also obscures
+   fine-scale patterns.
+
+```{r map-uncertainty-detail, fig.width = 9, fig.height = 4}
+par(mfrow = c(1, 2))
+occuMap(fit, type = "psi", main = "Occupancy probability")
+occuMap(fit, type = "sd", main = "Posterior SD")
+```
+
+High-SD regions are candidates for additional survey effort. If you are
+planning a follow-up study, targeting areas with $\text{SD}(\psi) > 0.2$
+will maximise information gain per unit effort.
+
+### Effect of mesh resolution on maps
+
+The mesh resolution controls the spatial detail that the model can capture.
+A finer mesh (smaller `max.edge`) resolves shorter-range patterns but
+increases computation. A coarser mesh runs faster but may smooth away
+real spatial structure.
+
+```{r mesh-comparison, fig.width = 9, fig.height = 4}
+# Fine mesh
+sp_fine <- occu_spatial(sim$data$coords,
+                        max.edge = c(0.03, 0.15),
+                        cutoff = 0.005)
+fit_fine <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                 spatial = sp_fine, verbose = 0)
+
+# Coarse mesh
+sp_coarse <- occu_spatial(sim$data$coords,
+                          max.edge = c(0.15, 0.4),
+                          cutoff = 0.03)
+fit_coarse <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                   spatial = sp_coarse, verbose = 0)
+
+par(mfrow = c(1, 2))
+occuMap(fit_fine, main = sprintf("Fine mesh (%d nodes)", sp_fine$n_mesh))
+occuMap(fit_coarse, main = sprintf("Coarse mesh (%d nodes)", sp_coarse$n_mesh))
+```
+
+Both maps should show the same broad spatial pattern, but the fine mesh
+captures more local variation. If the two maps look markedly
+different, the coarse mesh is too aggressive. If they are nearly
+identical, the extra nodes in the fine mesh are wasted computation. The
+default auto-mesh usually strikes a good balance, but for publication-quality
+maps or when the spatial range is short, a finer mesh is worth the cost.
+
+The fixed-effect estimates should be stable across mesh resolutions. If
+$\hat{\beta}$ changes noticeably between meshes, something else is wrong
+(typically the PC priors are too restrictive or the data are too sparse for
+a spatial model).
+
 
 ## Spatial prediction at new locations
 
-To predict occupancy at unsampled locations --- for instance, a regular grid
-covering the study area --- use `predict_spatial()`:
+To predict occupancy at unsampled locations (for instance, a regular grid
+covering the study area), use `predict_spatial()`:
 
 ```{r predict-spatial}
 new_coords <- expand.grid(
@@ -293,14 +404,85 @@ preds <- predict_spatial(fit, newcoords = new_coords, newocc.covs = new_covs)
 head(preds)
 ```
 
-The returned data frame contains the posterior mean occupancy (`psi`),
-posterior standard deviation (`sd`), and 95% credible interval bounds
-(`q0.025`, `q0.975`) at each prediction location. The spatial field is
-projected from the mesh to the new coordinates using the SPDE basis
-functions --- no re-fitting required.
+The returned object contains posterior mean occupancy (`psi.0$mean`),
+posterior standard deviation (`psi.0$sd`), and quantiles at each prediction
+location. The spatial field is projected from the mesh to the new
+coordinates using the SPDE basis functions, so no re-fitting is needed.
 
 Predictions respect the mesh boundary: locations far outside the convex hull
 of the observed sites will have high uncertainty, reflecting extrapolation.
+
+### Visualising predictions with uncertainty
+
+Spatial predictions are most useful when paired with uncertainty. The
+posterior standard deviation at each prediction location tells you where
+the model is confident and where additional data would be most valuable.
+
+```{r predict-spatial-vis, fig.width = 9, fig.height = 4}
+pred_df <- data.frame(
+  x   = new_coords$x,
+  y   = new_coords$y,
+  psi = preds$psi.0$mean
+)
+
+# Add uncertainty (SD) if available from posterior samples
+if (!is.null(preds$psi.0$sd)) {
+  pred_df$sd <- preds$psi.0$sd
+}
+
+# Add credible interval bounds
+if (!is.null(preds$psi.0$quantiles)) {
+  pred_df$lower <- preds$psi.0$quantiles[, 1]
+  pred_df$upper <- preds$psi.0$quantiles[, 3]
+  pred_df$ci_width <- pred_df$upper - pred_df$lower
+}
+
+par(mfrow = c(1, 2))
+
+# Left panel: predicted occupancy
+with(pred_df, {
+  plot(x, y, col = hcl.colors(100, "YlGnBu")[cut(psi, 100)],
+       pch = 15, cex = 0.6, asp = 1,
+       xlab = "X", ylab = "Y", main = "Predicted occupancy")
+})
+
+# Right panel: prediction uncertainty (CI width)
+if (!is.null(pred_df$ci_width)) {
+  with(pred_df, {
+    plot(x, y, col = hcl.colors(100, "YlOrRd")[cut(ci_width, 100)],
+         pch = 15, cex = 0.6, asp = 1,
+         xlab = "X", ylab = "Y", main = "95% CI width")
+  })
+}
+```
+
+Regions near observed sites have narrow credible intervals because the SPDE
+field is well-constrained by nearby data. Regions far from any site ---
+particularly outside the convex hull of the survey locations, show wider
+intervals, reflecting the increasing reliance on the prior as the data thin
+out. Target additional sampling at high-uncertainty areas to maximise
+information gain.
+
+### How spatial prediction works under the hood
+
+The prediction mechanism involves two steps. First, a **projection matrix**
+$\mathbf{A}_\text{pred}$ maps the SPDE field from mesh nodes to the new
+locations. Each row of $\mathbf{A}_\text{pred}$ contains the barycentric
+weights for the enclosing mesh triangle (typically three non-zero entries
+that sum to one). The predicted spatial field at location $\mathbf{s}_0$ is
+then $\hat{w}(\mathbf{s}_0) = \mathbf{a}(\mathbf{s}_0)^\top \hat{\mathbf{w}}$,
+where $\hat{\mathbf{w}}$ is the vector of posterior means (or samples) at
+the mesh nodes.
+
+Second, the full linear predictor combines the spatial projection with the
+fixed-effect design matrix:
+
+$$\hat{\eta}(\mathbf{s}_0) = \mathbf{x}_0^\top \hat{\boldsymbol{\beta}} + \hat{w}(\mathbf{s}_0)$$
+
+and the occupancy prediction is $\hat{\psi}(\mathbf{s}_0) = \text{logit}^{-1}(\hat{\eta})$.
+Because the posterior samples of $\boldsymbol{\beta}$ and $\mathbf{w}$ are
+drawn jointly from the INLA approximation, the uncertainty in $\hat{\psi}$
+correctly propagates both fixed-effect and spatial uncertainty.
 
 
 ## Areal (CAR/BYM2) models
@@ -312,14 +494,33 @@ border are correlated.
 
 INLAocc supports areal spatial models via `occu_areal()`:
 
-```{r areal, eval = FALSE}
-# Adjacency matrix: 1 if regions share a border, 0 otherwise
-adj <- matrix(0, 100, 100)
-# ... fill from shapefile or raster neighbourhood ...
+```{r areal}
+# Build a 10x10 grid adjacency matrix (queen contiguity)
+n_row <- 10; n_col <- 10; n_regions <- n_row * n_col
+adj <- matrix(0L, n_regions, n_regions)
+for (i in seq_len(n_regions)) {
+  r <- (i - 1) %/% n_col + 1
+  c <- (i - 1) %% n_col + 1
+  for (dr in -1:1) for (dc in -1:1) {
+    if (dr == 0 && dc == 0) next
+    nr <- r + dr; nc <- c + dc
+    if (nr >= 1 && nr <= n_row && nc >= 1 && nc <= n_col) {
+      j <- (nr - 1) * n_col + nc
+      adj[i, j] <- 1L
+    }
+  }
+}
 
 areal_spec <- occu_areal(adj, model = "bym2")
+str(areal_spec)
+```
 
-fit_areal <- occu(~ occ_x1, ~ det_x1, data = my_data,
+```{r areal-fit}
+# Create data with N = n_regions (100 sites matching the 10x10 grid)
+sim_areal <- simulate_occu(N = n_regions, J = 4, n_occ_covs = 1, n_det_covs = 1,
+                           beta_occ = c(0.5, -0.5), beta_det = c(0, -0.3),
+                           seed = 99)
+fit_areal <- occu(~ occ_x1, ~ det_x1, data = sim_areal$data,
                   spatial = areal_spec, verbose = 0)
 summary(fit_areal)
 ```
@@ -335,7 +536,7 @@ two components:
 - A **mixing parameter** $\phi \in [0, 1]$: controls the proportion of
   variance attributable to the structured vs. unstructured component. Values
   near 1 indicate strong spatial structure; near 0 means the variation is
-  essentially independent across regions.
+  independent across regions.
 
 `occu_areal()` accepts three adjacency formats: a symmetric binary matrix, an
 `spdep::nb` neighbourhood object, or a path to an INLA graph file. Use
@@ -350,7 +551,7 @@ graphs and provides the structured/unstructured decomposition.
 
 A standard spatial model assumes the covariate effects $\boldsymbol{\beta}$
 are constant across the study area, with the spatial field capturing residual
-structure. But sometimes a covariate's effect genuinely varies in space ---
+structure. But sometimes a covariate's effect varies in space:
 for example, elevation may matter more for occupancy in one region than
 another. A spatially varying coefficient (SVC) model allows this:
 
@@ -380,7 +581,7 @@ summary(fit_svc2)
 ```
 
 A spatially varying intercept (`svc = 1`) is equivalent to the standard SPDE
-model --- the spatial field modulates the baseline occupancy. A spatially
+model: the spatial field modulates the baseline occupancy. A spatially
 varying slope (`svc = 2`) asks a more specific question: does the effect of
 `occ_x1` change across space?
 
@@ -402,64 +603,567 @@ spatial pattern.
 
 ## Space-time models
 
-For multi-season data with spatial structure, INLAocc combines the SPDE
-spatial field with a temporal process. The `temporal` argument specifies the
-temporal correlation structure:
+Monitoring programmes often collect detection/non-detection data at the
+same sites across multiple years or seasons. When sites have spatial
+coordinates, fitting a model with both spatial and temporal structure yields
+a separable space-time occupancy model:
 
-```{r spatiotemporal, eval = FALSE}
-sim_st <- simTOcc(N = 100, J = 3, n_seasons = 5, seed = 300)
+$$\text{logit}(\psi_{i,t}) = \mathbf{x}_{i,t}^\top \boldsymbol{\beta} + w(\mathbf{s}_i) + \eta_t$$
 
+where $w(\mathbf{s}_i)$ is the spatial SPDE field (shared across seasons)
+and $\eta_t$ is a temporal random effect. The separability means the spatial
+pattern is the same in every season, but it is shifted up or down by the
+temporal effect. This is appropriate when the spatial configuration of
+habitat does not change between seasons but overall occupancy fluctuates.
+
+### The separable space-time model
+
+INLAocc combines the `spatial` and `temporal` arguments to fit this model.
+The `temporal` argument accepts `"ar1"` (autoregressive order 1) or `"iid"`
+(exchangeable, no temporal correlation):
+
+```{r spatiotemporal-sim}
+sim_st <- simTOcc(N = 150, J = 3, n_seasons = 6,
+                  beta_occ = c(0.5), beta_det = c(0),
+                  ar1 = TRUE, rho = 0.8, sigma_t = 0.6, seed = 300)
+```
+
+This creates a multi-season dataset with 150 sites, 3 visits per season,
+and 6 seasons. The temporal process has AR(1) correlation $\rho = 0.8$ and
+innovation SD $\sigma_t = 0.6$, so the spatial pattern is persistent across
+seasons but drifts gradually.
+
+### Fitting the space-time model
+
+```{r spatiotemporal-fit}
 fit_st <- occu(~ 1, ~ 1, data = sim_st$data,
                spatial = sim_st$data$coords,
                temporal = "ar1", verbose = 0)
 summary(fit_st)
 ```
 
-This fits an AR(1) temporal process alongside the SPDE spatial field,
-yielding a separable space-time model where the spatial field evolves
-smoothly over seasons. The AR(1) correlation parameter quantifies temporal
-persistence: values near 1 mean the spatial pattern is stable across
-seasons; values near 0 mean each season's spatial field is nearly
-independent.
+The summary reports both the SPDE hyperparameters (range and marginal SD of
+the spatial field) and the AR(1) parameters ($\rho$ and $\sigma_t$):
+
+- **AR(1) correlation ($\rho$).** Values near 1 indicate that the spatial
+  pattern is highly persistent: occupancy hotspots in year 1 remain
+  hotspots in year 6. Values near 0 mean each season's occupancy surface
+  is nearly independent, and values near $-1$ would indicate alternating
+  patterns (rare in ecology).
+- **Temporal SD ($\sigma_t$).** Controls the magnitude of year-to-year
+  fluctuations on the logit scale. Large values (> 1) mean that average
+  occupancy swings widely between seasons.
+- **Spatial range and SD.** Interpreted exactly as in the single-season
+  model: how far the spatial correlation extends and how much spatial
+  variation exists.
+
+### Comparing temporal structures
+
+If you are unsure whether an AR(1) or IID temporal effect is appropriate,
+fit both and compare via WAIC:
+
+```{r st-compare}
+fit_st_iid <- occu(~ 1, ~ 1, data = sim_st$data,
+                   spatial = sim_st$data$coords,
+                   temporal = "iid", verbose = 0)
+
+cat(sprintf("AR(1) WAIC: %.1f\nIID WAIC:   %.1f\n",
+            fit_st$waic, fit_st_iid$waic))
+```
+
+When the data are generated with temporal autocorrelation (as here,
+with $\rho = 0.8$), the AR(1) model should be preferred. When seasons are
+far apart in time or the system is driven by stochastic events (e.g.,
+fire), the IID model may be more appropriate.
+
+### Extracting season-specific occupancy
+
+The fitted space-time model contains season-level occupancy estimates. To
+see the temporal trajectory:
+
+```{r st-temporal-trend}
+# Season-specific average psi
+n_seasons <- sim_st$data$n_seasons %||% ncol(sim_st$truth$psi)
+season_psi <- numeric(n_seasons)
+for (t in seq_len(n_seasons)) {
+  season_psi[t] <- mean(fit_st$psi_hat_list[[t]], na.rm = TRUE)
+}
+
+plot(seq_len(n_seasons), season_psi, type = "b", pch = 16,
+     xlab = "Season", ylab = expression(bar(psi)),
+     main = "Average occupancy across seasons",
+     ylim = c(0, 1))
+```
+
+This plot shows how mean occupancy probability evolves over the monitoring
+period. Because the AR(1) model borrows strength across seasons, estimates
+for seasons with sparse data are regularised toward the temporal mean.
+
+### Season-specific occupancy maps
+
+For a spatial view of temporal change, produce maps for individual seasons.
+This requires extracting the combined spatial + temporal predictions:
+
+```{r st-maps, fig.width = 9, fig.height = 8}
+if (n_seasons >= 4) {
+  par(mfrow = c(2, 2))
+  for (t in c(1, 2, floor(n_seasons / 2), n_seasons)) {
+    if (!is.null(fit_st$spatial)) {
+      occuMap(fit_st, main = sprintf("Season %d", t))
+    }
+  }
+}
+```
+
+Comparing maps across seasons reveals where occupancy is expanding,
+contracting, or stable. The spatial field $w(\mathbf{s})$ stays constant
+(it is the site-level baseline), while the temporal effect $\eta_t$ shifts
+the entire surface up or down.
+
+### When to use space-time vs. separate single-season models
+
+Fitting a single space-time model rather than six separate single-season
+models has three advantages:
+
+1. **Temporal borrowing of strength.** Seasons with fewer sites or visits
+   borrow information from data-rich seasons through the AR(1) structure.
+   This is especially valuable when some sites are only surveyed in a
+   subset of years.
+2. **Shared spatial field.** The spatial pattern is estimated from all
+   seasons jointly, giving a more precise estimate than any single season
+   alone.
+3. **Temporal correlation is estimated, not assumed.** The AR(1) parameter
+   $\rho$ quantifies how persistent the spatial pattern is, which is itself
+   an ecological quantity of interest.
+
+The main limitation is the separability assumption: the spatial field is the
+same in every season. If the spatial pattern changes between
+seasons (e.g., range expansion, habitat loss), a non-separable model or
+separate single-season spatial models may be more appropriate.
 
 For more on temporal modelling without the spatial component, see
-`vignette("quickstart")`.
+`vignette("temporal-models")`.
+
+
+## Multi-species spatial models
+
+When multiple species are surveyed across the same set of spatially
+referenced sites, fitting a shared spatial field can improve estimates for
+rare species by borrowing spatial information from data-rich species. In
+INLAocc, multi-species spatial models are specified by combining the
+`multispecies` and `spatial` arguments:
+
+```{r ms-spatial-sim}
+sim_ms <- simMsOcc(N = 200, J = 4, n_species = 5,
+                   n_occ_covs = 1, n_det_covs = 1,
+                   spatial_range = 0.3, seed = 77)
+```
+
+This simulates detection histories for 5 species at 200 spatially
+correlated sites. The shared spatial field means that species living in the
+same landscape experience the same underlying spatial structure, though each
+species has its own covariate responses.
+
+```{r ms-spatial-fit}
+fit_ms <- occu(~ occ_x1, ~ det_x1, data = sim_ms$data,
+               spatial = sim_ms$data$coords,
+               multispecies = TRUE, verbose = 0)
+summary(fit_ms)
+```
+
+The summary reports species-specific fixed effects alongside the shared SPDE
+hyperparameters. Because all species contribute to the estimation of the
+spatial range and marginal SD, these hyperparameters are estimated more
+precisely than they would be in any single-species model.
+
+### Species-specific occupancy maps
+
+The `occuMap()` function accepts a `species` argument for multi-species
+models:
+
+```{r ms-spatial-maps, fig.width = 9, fig.height = 4}
+par(mfrow = c(1, 2))
+occuMap(fit_ms, species = 1, main = sim_ms$data$species_names[1])
+occuMap(fit_ms, species = 2, main = sim_ms$data$species_names[2])
+```
+
+Each map shows the predicted occupancy surface for one species, combining
+the shared spatial field with species-specific fixed effects. Species that
+are rare overall will have lower occupancy across the map but still exhibit
+the same spatial pattern (high-occupancy and low-occupancy regions driven by
+the shared spatial field).
+
+### Species richness maps
+
+Summing the latent occupancy states across species at each site gives an
+estimate of species richness. The `richness()` function computes this
+directly:
+
+```{r ms-richness}
+rich <- richness(fit_ms)
+head(rich)
+```
+
+The `richness` column gives the expected number of species at each site,
+and `sd` gives the posterior uncertainty. Sites with high richness
+uncertainty are good candidates for additional survey effort.
+
+For a full treatment of multi-species models (community models, JSDMs,
+latent factor models), see `vignette("multi-species")`.
+
+
+## Posterior predictive checks for spatial models
+
+Model fit assessment via posterior predictive checks (PPC) is as important
+for spatial models as for non-spatial ones. The `ppcOccu()` function
+generates replicated datasets from the fitted model and compares a summary
+statistic between observed and replicated data. If the model fits well, the
+observed statistic should be indistinguishable from the replicated
+distribution.
+
+```{r ppc-spatial}
+ppc <- ppcOccu(fit, fit.stat = "freeman-tukey", group = 1, n.samples = 500)
+cat(sprintf("Bayesian p-value: %.3f\n", ppc$bayesian.p))
+```
+
+A Bayesian p-value near 0.5 indicates adequate fit. Values below 0.1 or
+above 0.9 suggest systematic lack of fit. The model is either
+underfitting (p near 1, generating too much variability) or overfitting (p
+near 0, generating too little variability). For spatial models, a poor
+Bayesian p-value after adding the SPDE field often indicates that the
+spatial structure is more complex than the Matern field can capture, or that
+an important covariate is missing.
+
+The `group` argument controls the aggregation: `group = 1` aggregates by
+site (summing detections across visits within each site), while `group = 2`
+aggregates by visit (summing across sites within each visit). Site-level
+aggregation is usually more informative for spatial models because it tests
+whether the spatial pattern of detections is consistent with the model.
+
+For a visual assessment, plot the fit statistics:
+
+```{r ppc-plot, fig.width = 5, fig.height = 5}
+plot(ppc$fit.y, ppc$fit.y.rep, pch = 16, cex = 0.4,
+     xlab = "Observed fit statistic",
+     ylab = "Replicated fit statistic",
+     main = sprintf("PPC (p = %.3f)", ppc$bayesian.p))
+abline(0, 1, lty = 2, col = "red")
+```
+
+Points should scatter roughly along the 1:1 line. Systematic departure from
+the line indicates a particular direction of misfit.
+
+
+## Model comparison and selection
+
+Spatial models add complexity: a mesh, two hyperparameters (range and
+marginal SD), and potentially hundreds of random-effect nodes. Whether this
+complexity is justified depends on the data. INLAocc provides several tools
+for formal model comparison.
+
+### WAIC
+
+The `waicOccu()` function computes the Widely Applicable Information
+Criterion on the Bernoulli observation scale, making it directly comparable
+across models with different random-effect structures:
+
+```{r waic-comparison}
+waic_nospatial <- waicOccu(fit_nospatial)
+waic_spatial   <- waicOccu(fit)
+
+cat(sprintf("Non-spatial WAIC: %.1f\nSpatial WAIC:     %.1f\n",
+            waic_nospatial$WAIC, waic_spatial$WAIC))
+```
+
+Lower WAIC indicates better expected predictive accuracy. A reduction of
+more than 2--3 units generally indicates meaningful improvement; reductions
+of less than 2 suggest the spatial term is not needed.
+
+### Comparing multiple models
+
+When evaluating several candidate models (non-spatial,
+SPDE spatial, areal), the `compare_models()` function produces a
+ranked table:
+
+```{r compare-models}
+compare_models(
+  "Non-spatial" = fit_nospatial,
+  "Spatial"     = fit
+)
+```
+
+The table is sorted by WAIC (or AIC/BIC if specified via `criterion`),
+with delta values and Akaike-like weights. Models within 2 WAIC units of
+the best model have similar predictive performance, and the weights
+quantify their relative plausibility.
+
+
+## Reporting spatial results in manuscripts
+
+Spatial occupancy models involve more moving parts than standard models,
+and reviewers will expect certain details. The following checklist covers
+the minimum information to report.
+
+**Model specification:**
+
+- The occupancy and detection formulas (covariates on each process).
+- Whether the spatial effect is SPDE (continuous) or CAR/BYM2 (areal).
+- The coordinate reference system and units (UTM zone, decimal degrees).
+- For SPDE: the PC prior settings for range and marginal SD, with
+  justification (e.g., "we set `prior.range = c(5, 0.5)` based on the
+  minimum home range diameter of the study species").
+- For areal: the adjacency definition (queen vs. rook contiguity, or
+  distance-based).
+
+**Model diagnostics:**
+
+- Moran's I on occupancy residuals (before and after adding the spatial
+  term) to demonstrate that spatial autocorrelation has been absorbed.
+- The empirical semivariogram, showing a flat pattern after spatial
+  modelling.
+- Posterior predictive check Bayesian p-value.
+- WAIC comparison between the spatial and non-spatial models.
+
+**Key results to report:**
+
+- Fixed-effect estimates with 95% credible intervals (on both the logit
+  and probability scales if relevant).
+- Estimated spatial range $\hat{\rho}$ and marginal SD $\hat{\sigma}$
+  with credible intervals. The range tells readers the scale of spatial
+  dependence; the SD quantifies how much spatial variation exists beyond
+  what covariates explain. Use `spatialRange()` to extract these.
+- For SVC models: the global mean effect and the SD of the spatially
+  varying departure.
+- Maps of predicted occupancy and posterior uncertainty. Always include a
+  colour bar with units, the coordinate system, and a scale bar or axis
+  labels.
+
+**What not to report:**
+
+- Mesh construction details (node count, max.edge, cutoff) are
+  implementation details that belong in a supplementary methods section,
+  not the main text.
+- The full INLA hyperparameter summary. Report the interpretable
+  quantities (range, SD) rather than the internal parameterisation
+  ($\kappa$, $\tau$).
+
+**Example methods paragraph:**
+
+> We modelled occupancy probability as a function of elevation and canopy
+> cover, with a spatial random effect estimated via the SPDE approach
+> (Lindgren et al. 2011). The spatial field was assigned a Matern
+> covariance with PC priors: P(range < 5 km) = 0.5 and P(sigma > 1) =
+> 0.05. Detection was modelled as a function of survey effort. The model
+> was fitted using the EM-INLA algorithm implemented in INLAocc v0.3.1.
+> Residual Moran's I dropped from 0.32 (p < 0.001) in the non-spatial
+> model to 0.02 (p = 0.41) in the spatial model, confirming that the SPDE
+> field absorbed the spatial autocorrelation. WAIC decreased from 412.3
+> (non-spatial) to 387.1 (spatial).
 
 
 ## Practical guidance
 
-**Start simple.** Fit the non-spatial model first, then check `moranI()`. If
+### Start simple
+
+Fit the non-spatial model first, then check `moranI()`. If
 residual autocorrelation is non-significant (say, p > 0.05), the spatial term
 may not be needed. Compare WAIC between spatial and non-spatial models to
-confirm.
+confirm. Adding a spatial field to a model with no spatial signal costs
+computation and can destabilise estimation because the SPDE parameters become
+poorly identified when the spatial variance is near zero.
 
-**Trust the auto-mesh.** The default mesh construction works for most
-datasets (up to a few thousand sites). Only tune `max.edge`, `cutoff`, or
-the PC priors when you have domain knowledge about the spatial range or
-when diagnostics suggest problems.
+### Mesh resolution vs. compute trade-offs
 
-**Match prior units to coordinate units.** If your coordinates are in UTM
-metres, `prior.range = c(5000, 0.5)` means you believe the range is likely
-at least 5 km. If coordinates are in decimal degrees, the prior is in
-degrees. Rescaling to a unit square avoids confusion and makes the defaults
-more portable.
+The mesh is the computational bottleneck in spatial INLA models. The number
+of mesh nodes ($n$) determines both the quality of the spatial
+approximation and the cost of each EM iteration (roughly $O(n^{3/2})$ for
+the Cholesky factorisation in 2D).
 
-**Watch for large N.** The SPDE approach scales well (the mesh has far fewer
-nodes than sites), but for $N > 5000$ the EM iterations can be slow. Options
-include coarsening the mesh (`max.edge` larger), subsampling sites, or
-increasing the `cutoff` to reduce mesh density in data-rich areas.
+| Mesh density | Typical $n$ (300 sites) | Wall time | Use case |
+|:---|:---:|:---:|:---|
+| Very coarse (`max.edge = c(0.2, 0.5)`) | 50--100 | seconds | Quick exploration, large-scale screening |
+| Default auto-mesh | 200--500 | 10--30 sec | Most analyses |
+| Fine (`max.edge = c(0.03, 0.15)`) | 1000--3000 | 1--5 min | Publication maps, short-range fields |
+| Very fine (`max.edge = c(0.01, 0.05)`) | 5000+ | 10+ min | Only if justified by data density |
 
-**Use WAIC for model comparison.** A spatial model that does not improve WAIC
-over the non-spatial version is adding complexity without payoff. The spatial
-term should be justified by the data, not added by default.
+**Rule of thumb:** the inner `max.edge` should be no larger than the
+expected spatial range, and no smaller than $1/3$ of the minimum
+inter-site distance. If your sites are regularly spaced at 1 km intervals
+and you expect a range of 5 km, `max.edge = c(2, 10)` (in km) is a good
+starting point.
 
-**Check the spatial field map.** `occuMap(fit, type = "spatial")` shows the
-spatial random effect alone. If this map shows sharp features that track a
-known covariate you omitted, consider adding that covariate instead of
-relying on the spatial field to absorb it. The spatial field should capture
-genuinely unstructured residual variation, not proxy for missing covariates.
+The `cutoff` parameter prevents mesh nodes from being placed too close
+together. Increasing `cutoff` in data-dense regions (e.g., clustered sites)
+reduces $n$ with minimal loss of accuracy. The auto-mesh sets
+`cutoff = max.edge[1] / 5`, which is adequate for most datasets.
 
-**Areal vs. SPDE.** Use SPDE when sites are point locations with known
-coordinates. Use areal (CAR/BYM2) when sites are regions defined by
-boundaries (counties, grid cells, management units). Do not use SPDE with
-region centroids --- the adjacency structure is more appropriate.
+### Prior sensitivity for SPDE parameters
+
+The PC priors on the spatial range and marginal SD are the most influential
+user choices in a spatial model. Unlike fixed-effect priors (which are
+typically overwhelmed by data), the SPDE priors can shift
+the estimated spatial field, especially when data are sparse or the spatial
+signal is weak.
+
+**Range prior sensitivity.** The range prior `prior.range = c(r0, p)`
+controls the minimum spatial scale the model considers plausible. Setting
+$r_0$ too large forces the field to be smooth, potentially masking
+short-range patterns. Setting $r_0$ too small allows the field to fit noise.
+
+```{r prior-sensitivity, fig.width = 9, fig.height = 4}
+# Tight range prior: range unlikely < 0.5
+sp_tight <- occu_spatial(sim$data$coords,
+                         prior.range = c(0.5, 0.01),
+                         prior.sigma = c(1, 0.05))
+fit_tight <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                  spatial = sp_tight, verbose = 0)
+
+# Loose range prior: range unlikely < 0.05
+sp_loose <- occu_spatial(sim$data$coords,
+                         prior.range = c(0.05, 0.5),
+                         prior.sigma = c(1, 0.05))
+fit_loose <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                  spatial = sp_loose, verbose = 0)
+
+par(mfrow = c(1, 2))
+occuMap(fit_tight, type = "spatial",
+        main = sprintf("Tight prior (range = %.2f)",
+                       spatialRange(fit_tight)$mean[1]))
+occuMap(fit_loose, type = "spatial",
+        main = sprintf("Loose prior (range = %.2f)",
+                       spatialRange(fit_loose)$mean[1]))
+```
+
+The tight prior (left) produces a smoother field because short-range
+fluctuations are penalised. The loose prior (right) allows more local
+variation. If the two maps look similar and the estimated ranges agree, the
+data are informative and the prior choice is not critical. If they diverge,
+report results under both priors or use domain knowledge to choose.
+
+**Variance prior sensitivity.** The sigma prior `prior.sigma = c(s0, p)`
+controls how much variation the spatial field can absorb. Setting $s_0$ too
+small allows the field to soak up variation that belongs to fixed effects,
+potentially biasing covariate estimates toward zero. The PC prior framework
+penalises complexity (i.e., large $\sigma$), which provides automatic
+regularisation.
+
+**Practical guidance on prior elicitation:**
+
+1. Set `prior.range` based on the minimum distance over which you expect
+   occupancy to change. For a bird species in heterogeneous habitat, this
+   might be 1--5 km. For a sessile organism in a homogeneous landscape, it
+   could be 20+ km.
+2. Set `prior.sigma` based on how much unexplained spatial variation you
+   expect on the logit scale. A logit-scale SD of 1 corresponds to a
+   roughly 3-fold change in odds between nearby sites. Values above 2 are
+   rarely justified for single-species models.
+3. When coordinates are in disparate units (degrees vs. metres), rescale
+   to a [0, 1] box and set priors relative to the unit square. This makes
+   the defaults portable across studies.
+
+### When CAR/BYM2 beats SPDE
+
+The SPDE and CAR/BYM2 approaches model different kinds of spatial
+dependence, and the choice should match the data structure:
+
+| Criterion | SPDE | CAR/BYM2 |
+|:---|:---|:---|
+| Data type | Point locations with coordinates | Areal units (counties, grid cells) |
+| Adjacency | Not needed (continuous field) | Required (shared borders) |
+| Resolution | Continuous; can predict anywhere | Discrete; one value per region |
+| Computation | Scales with mesh nodes | Scales with number of regions |
+| Range estimation | Yes (Matern range parameter) | No (implicit from adjacency) |
+| Disconnected regions | Handled via mesh extension | BYM2 handles; pure Besag does not |
+
+**Do not use SPDE with region centroids.** If your data are counts or
+proportions aggregated to administrative units, the centroids do not
+represent point locations and the distance-based Matern covariance is
+inappropriate. Use `occu_areal()` with the actual adjacency structure.
+
+**Do not use CAR for point data.** If you have GPS coordinates for each
+site, the SPDE approach is natural. Converting point data to a grid and
+then applying CAR discards information and introduces arbitrary decisions
+about grid resolution.
+
+### Minimum sample size guidance
+
+Spatial models require sufficient data to estimate both the fixed effects
+and the spatial field. The minimum depends on the spatial range relative to
+the study extent:
+
+- **$N < 30$ sites:** A spatial model is almost never justified. The SPDE
+  parameters will be poorly identified and the mesh will have more nodes
+  than data points. Use a non-spatial model.
+- **$30 \leq N < 100$ sites:** A spatial model can work if sites span the
+  study area and the spatial range is not too short. Use strong PC priors
+  (tighter than the defaults) and check that the estimated range is not
+  hitting the prior boundary.
+- **$100 \leq N < 500$ sites:** The sweet spot for most ecological studies.
+  The default auto-mesh and priors should work well.
+- **$N > 500$ sites:** The SPDE approach scales efficiently. Consider
+  increasing `cutoff` to prevent the mesh from becoming excessively dense
+  in data-rich clusters.
+- **$N > 5000$ sites:** The EM iterations can be slow. Options include
+  coarsening the mesh, increasing `num.threads` for parallel INLA,
+  subsampling sites, or fitting regional submodels.
+
+For multi-season models, the effective sample size is $N \times T$ (sites
+times seasons), so even modest $N$ can support a spatial model when many
+seasons are available.
+
+### Trust the auto-mesh
+
+The default mesh construction works for most datasets (up to a few
+thousand sites). Only tune `max.edge`, `cutoff`, or the PC priors when you
+have domain knowledge about the spatial range or when diagnostics suggest
+problems.
+
+### Match prior units to coordinate units
+
+If your coordinates are in UTM metres, `prior.range = c(5000, 0.5)` means
+you believe the range is likely at least 5 km. If coordinates are in
+decimal degrees, the prior is in degrees. Rescaling to a unit square
+avoids confusion and makes the defaults more portable.
+
+### Use WAIC for model comparison
+
+A spatial model that does not improve WAIC over the non-spatial version is
+adding complexity without payoff. The spatial term should be justified by
+the data, not added by default. For space-time models, compare:
+
+1. Non-spatial, no temporal effect (baseline)
+2. Temporal only (`temporal = "ar1"`)
+3. Spatial only (`spatial = coords`)
+4. Space-time (`spatial = coords, temporal = "ar1"`)
+
+Each step should reduce WAIC if the added structure is real. A common
+pattern is that the spatial model improves WAIC by 10+ units but adding
+temporal structure provides only marginal gain (or vice versa), which tells
+you where the dominant source of unmodelled variation lies.
+
+### Check the spatial field map
+
+`occuMap(fit, type = "spatial")` shows the spatial random effect alone. If
+this map shows sharp features that track a known covariate you omitted,
+consider adding that covariate instead of relying on the spatial field to
+absorb it. The spatial field should capture genuinely unstructured residual
+variation, not proxy for missing covariates.
+
+### Convergence and the EM algorithm
+
+The EM algorithm for spatial models typically converges in 10--30
+iterations. If convergence is slow (> 40 iterations) or the log-likelihood
+oscillates, consider:
+
+- **Increasing damping** (`damping = 0.5` or higher). The damping parameter
+  controls how much the occupancy state $z$ is updated at each iteration.
+  Higher damping stabilises convergence at the cost of more iterations.
+- **Stronger PC priors.** Weakly identified spatial parameters can cause the
+  EM to wander. Tighter priors help anchor the spatial field.
+- **Reducing mesh complexity.** An overly fine mesh can cause the SPDE
+  parameters to be poorly identified because the field can fit noise.
+  Start coarse and refine.
+
+The `verbose = 1` option prints iteration-level summaries including the
+log-likelihood and parameter changes, which is useful for diagnosing
+convergence issues.

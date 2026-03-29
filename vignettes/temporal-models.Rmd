@@ -14,11 +14,22 @@ knitr::opts_chunk$set(
   comment = "#>",
   fig.width = 7,
   fig.height = 5,
+  dev = "svglite",
+  fig.ext = "svg",
   eval = HAS_INLA,
   cache = TRUE,
   message = FALSE,
   warning = FALSE
 )
+# Transparent ggplot backgrounds for light/dark mode
+theme_transparent <- function() {
+  ggplot2::theme(
+    plot.background  = ggplot2::element_rect(fill = "transparent", colour = NA),
+    panel.background = ggplot2::element_rect(fill = "transparent", colour = NA),
+    legend.background = ggplot2::element_rect(fill = "transparent", colour = NA),
+    legend.key       = ggplot2::element_rect(fill = "transparent", colour = NA)
+  )
+}
 ```
 
 ## Introduction
@@ -28,7 +39,7 @@ a site in one year may go locally extinct the next, and previously unoccupied
 sites may be colonized. Single-season occupancy models treat each site as a
 snapshot, discarding the temporal information embedded in repeated surveys across
 years. When the data contain temporal structure, ignoring it wastes information
-at best and produces biased estimates at worst --- occupancy trends are
+at best and produces biased estimates at worst. Occupancy trends are
 confounded with detection variation, and standard errors are too narrow because
 the model treats non-independent observations as independent.
 
@@ -44,7 +55,7 @@ rates themselves.
 
 INLAocc fits multi-season models by stacking all site-period combinations into a
 joint occupancy model with an AR(1) temporal random effect. Detection is fit
-per-period, so each season gets its own detection parameters --- survey
+per-period, so each season gets its own detection parameters. Survey
 conditions in July 2019 need not resemble those in July 2023. The temporal
 random effect $\eta_t$ captures shared year-to-year fluctuation: good years
 (favourable weather, high resource availability) raise occupancy across all
@@ -74,12 +85,12 @@ $$y_{ijt} \mid z_{it} \sim \text{Bernoulli}(z_{it} \cdot p_{ijt}), \quad \text{l
 where $y_{ijt}$ is the detection/non-detection outcome at site $i$, visit $j$,
 period $t$, and $p_{ijt}$ is the detection probability.
 
-Three features of this formulation are worth highlighting:
+Three features of this formulation matter in practice:
 
 - **$\eta_t$ captures shared temporal trends.** All sites experience the same
   temporal random effect in a given period. This represents "good years vs. bad
-  years" for the species --- shared environmental conditions that raise or lower
-  occupancy across the landscape.
+  years" for the species, reflecting shared environmental conditions that raise
+  or lower occupancy across the landscape.
 
 - **$\rho$ controls persistence.** A high $\rho$ (e.g., 0.8) means occupancy
   patterns persist across periods: if this year is good, next year is likely good
@@ -95,8 +106,8 @@ What does $\rho = 0.7$ mean in ecological terms? It means that if occupancy is
 above average this year, about 70% of that excess carries over to the next year.
 A site network where most occupied sites remain occupied and most empty sites
 remain empty produces high $\rho$. This is typical for species with strong site
-fidelity or slow population dynamics --- think territorial birds, long-lived
-amphibians, or perennial plants. A low $\rho$ (say 0.2) indicates that knowing
+fidelity or slow population dynamics (territorial birds, long-lived
+amphibians, or perennial plants). A low $\rho$ (say 0.2) indicates that knowing
 this year's occupancy tells you little about next year: the species may be
 nomadic, or local populations may be driven by stochastic events like flooding or
 fire.
@@ -105,16 +116,73 @@ The innovation standard deviation $\sigma_\eta$ captures the magnitude of
 year-to-year environmental stochasticity after accounting for temporal
 persistence. A large $\sigma_\eta$ with high $\rho$ means the system has strong
 shocks that then persist (a bad year stays bad for several years). A large
-$\sigma_\eta$ with low $\rho$ means large but transient fluctuations. The
-classical colonization-extinction parameterization (MacKenzie et al. 2003) models
-the same persistence through explicit transition probabilities: colonization
-$\gamma$ and extinction $\epsilon$. Both formulations capture temporal
-dependence, but the AR(1) is more parsimonious when colonization and extinction
-rates are not themselves the inferential target. If you need to estimate how
-quickly empty sites are recolonized, the dynamic parameterization is more
-natural. If you need to estimate occupancy trends and their drivers, the AR(1) is
-typically sufficient and avoids identifiability issues that arise when both
-$\gamma$ and $\epsilon$ interact with covariates.
+$\sigma_\eta$ with low $\rho$ means large but transient fluctuations.
+
+### Relationship to the colonization-extinction parameterization
+
+The classical dynamic occupancy model (MacKenzie et al. 2003) parameterizes
+temporal dependence through explicit transition probabilities: colonization
+$\gamma$ (probability that an unoccupied site becomes occupied) and extinction
+$\epsilon$ (probability that an occupied site becomes unoccupied). The
+occupancy state at time $t$ depends deterministically on the state at $t-1$:
+
+$$\psi_{i,t} = \psi_{i,t-1}(1 - \epsilon) + (1 - \psi_{i,t-1})\gamma$$
+
+This is a first-order Markov chain on $[0, 1]$. The AR(1) model achieves a
+similar temporal dependence structure, but on the logit scale rather than
+the probability scale:
+
+$$\text{logit}(\psi_{i,t}) = \mathbf{x}_i^\top \boldsymbol{\beta} + \rho \cdot \eta_{t-1} + \epsilon_t$$
+
+Both formulations capture temporal dependence, but they differ in
+what they directly estimate. The colonization-extinction model estimates the
+transition rates $(\gamma, \epsilon)$ explicitly, which is natural when these
+rates are the inferential target (for instance, when assessing how quickly
+a species recolonizes restored habitat). The AR(1) model estimates occupancy
+trends and their drivers without requiring separate identification of
+colonization and extinction, which is more parsimonious when the transition
+rates are not themselves of interest.
+
+A practical advantage of the AR(1) is identifiability. The
+colonization-extinction model requires enough data at each transition to
+separately estimate $\gamma$ and $\epsilon$, and when these rates interact
+with covariates, the number of parameters grows quickly relative to the
+information in the data. The AR(1) model adds only two hyperparameters
+($\rho$ and $\sigma_\eta$) regardless of the number of covariates, because the
+temporal structure is orthogonal to the covariate effects. This makes it
+well-suited to short time series (3--5 periods) where the classical
+dynamic model may struggle with convergence.
+
+The marginal variance of the stationary AR(1) process is
+$\sigma^2_\eta / (1 - \rho^2)$, which gives the total temporal variance in
+occupancy on the logit scale. When $\rho$ is close to 1, this marginal
+variance can be large even if the innovation variance $\sigma^2_\eta$ is
+small, because small shocks accumulate over time. This is analogous to a
+system with low extinction ($\epsilon \approx 0$) and low colonization
+($\gamma \approx 0$) in the classical framework: the occupancy state is
+highly persistent and any perturbation takes many time steps to dissipate.
+
+
+### The separable covariance assumption
+
+The model as specified uses a *separable* spatio-temporal covariance
+structure: the spatial pattern (if a spatial random field is included) is the
+same every year, and the temporal pattern is the same at every site. In
+notation, the total random effect decomposes as $w(\mathbf{s}_i) + \eta_t$
+rather than $\xi(\mathbf{s}_i, t)$, where $\xi$ would be a full
+spatio-temporal random field. Separability is a strong assumption, but it
+is often reasonable when the time series is short (3--10 periods), because a
+full spatio-temporal field has too many parameters to estimate reliably from
+limited temporal replication.
+
+When separability is violated (for instance, if a species is declining in
+the south but expanding in the north), the separable model averages over the
+heterogeneity. The fitted temporal random effect $\hat{\eta}_t$ will
+represent the landscape-average temporal fluctuation, and the residuals will
+show spatially structured patterns that change over time. In that case,
+spatially varying coefficient (SVC) models (see `vignette("svc-models")`) or
+interaction terms between spatial covariates and time can capture the
+non-separable structure.
 
 
 ## Data structure
@@ -131,18 +199,14 @@ Each entry is 1 (detected), 0 (not detected), or `NA` (visit not conducted).
 Here is an example for a single site surveyed over 5 years with 3 visits per
 year:
 
-```{r data-example, eval = FALSE}
-# 100 sites, surveyed over 5 years, 3 visits per year
-dim(y)
-#> [1] 100   5   3
+```{r data-example}
+# Quick simulation to show the 3D array structure
+library(INLAocc)
+sim_demo <- simTOcc(N = 50, J = 3, n_seasons = 5, seed = 1)
+dim(sim_demo$data$y)
 
-y[1, , ]  # site 1, all years:
-#>      [,1] [,2] [,3]
-#> [1,]    1    0    1    # year 1: detected twice
-#> [2,]    0    0    0    # year 2: never detected
-#> [3,]    1    1    0    # year 3: detected twice
-#> [4,]    0    0   NA    # year 4: detected zero, one visit missing
-#> [5,]    1    1    1    # year 5: detected all visits
+# Site 1, all years and visits
+sim_demo$data$y[1, , ]
 ```
 
 Covariates follow the same dimensional logic:
@@ -161,6 +225,21 @@ Covariates follow the same dimensional logic:
 Missing visits (`NA` in the detection array) are handled automatically. Entire
 missing periods for a site (all visits `NA`) effectively remove that
 site-period combination from the likelihood.
+
+An important asymmetry in the missing data handling: **occupancy covariates
+must be complete** for all site-period combinations, even when the detection
+data contain `NA` values. This is because the occupancy process model is
+defined over all sites and periods, and the AR(1) temporal random effect
+requires a complete time index. If an occupancy covariate is unavailable for
+certain site-periods (e.g., a remotely sensed habitat variable was not
+collected in a particular year), some form of imputation (mean imputation,
+interpolation, or carrying forward the last observed value) must be
+applied before fitting the model. Detection covariates, by contrast, can
+contain `NA` values in site-period-visit combinations where no survey was
+conducted; these entries are simply omitted from the detection likelihood.
+If there is a mismatch between `NA` patterns in the detection array and the
+detection covariates, INLAocc will issue a warning identifying the
+discrepant entries.
 
 Common temporal data collection designs map onto this structure in different
 ways. Annual surveys (e.g., breeding bird surveys repeated yearly) produce one
@@ -208,13 +287,118 @@ highest values had elevated occupancy across all sites, while years with
 negative values were below-average.
 
 
+### A more realistic scenario: trend plus noise
+
+Real-world temporal occupancy data rarely follow a pure AR(1) process. More
+commonly, a directional trend (e.g., gradual decline from habitat loss) is
+overlaid with correlated noise (good years and bad years). The following
+simulation creates a 10-season dataset where occupancy declines linearly over
+time while year-to-year noise follows the AR(1). This scenario is common for
+species in landscapes undergoing gradual land-use change.
+
+```{r simulate-trend}
+# Longer time series with a declining linear trend
+sim_trend <- simTOcc(
+  N = 150, J = 3, n_seasons = 10,
+  beta_occ = c(1.0, 0.5),    # higher baseline, one covariate
+  beta_det = c(0.5, -0.2),   # moderate detection
+  rho = 0.6, sigma_t = 0.4,  # moderate persistence, moderate noise
+  seed = 99
+)
+
+# Manually add a declining time trend to the occupancy linear predictor.
+# simTOcc generates AR(1) noise; we overlay a fixed trend on the data
+# by including a time-varying covariate.
+n_seasons <- 10
+trend_vals <- seq(0, -1.5, length.out = n_seasons)  # decline of 1.5 logit units
+sim_trend$data$occ.covs$time_trend <- matrix(
+  rep(trend_vals, each = 150), nrow = 150, ncol = n_seasons
+)
+
+# Inspect naive occupancy per period
+naive_psi <- apply(sim_trend$data$y, 2, function(y_t) {
+  mean(apply(y_t, 1, function(row) any(row == 1, na.rm = TRUE)))
+})
+data.frame(period = 1:n_seasons, naive_psi = round(naive_psi, 3))
+```
+
+The declining naive occupancy is visible even before modelling, but remember
+that naive rates confound occupancy with detection. The model separates the
+two processes.
+
+```{r fit-trend-sim}
+fit_trend_sim <- occu(
+  ~ occ_x1 + time_trend, ~ det_x1,
+  data = sim_trend$data, temporal = "ar1", verbose = 0
+)
+summary(fit_trend_sim)
+```
+
+The fixed `time_trend` coefficient captures the directional decline, while the
+AR(1) random effect absorbs residual year-to-year noise around the trend. If
+you omit the fixed trend and rely solely on the AR(1), the model can still
+track the decline through a sequence of same-sign innovations, but the
+estimated $\rho$ will be inflated because it has to absorb both the trend and
+the autocorrelation. Separating the two is better practice when you have
+theoretical reason to expect a directional change.
+
+
+## Exploratory data analysis
+
+Before fitting any model, plotting the raw detection frequencies per period
+gives a useful first impression of the temporal signal and its magnitude.
+Because raw detection rates confound occupancy with detection probability,
+they should not be taken at face value, but they reveal gross patterns
+(trends, outlier years, or a lack of temporal variation) that help guide
+model specification.
+
+```{r eda-raw}
+# Compute naive occupancy per period: proportion of sites with at least one detection
+naive_occ <- apply(sim$data$y, 2, function(y_t) {
+  mean(apply(y_t, 1, function(row) any(row == 1, na.rm = TRUE)))
+})
+
+data.frame(period = seq_along(naive_occ), naive_occupancy = round(naive_occ, 3))
+```
+
+These raw proportions are biased low (a site can be occupied but go
+undetected across all visits), but their period-to-period pattern should
+correlate with the model-based estimates. A monotonic trend in raw rates
+suggests a fixed time trend may be warranted alongside the AR(1). Large
+between-period swings suggest the temporal random effect will absorb
+substantial variation. If the raw rates are nearly constant across periods,
+the AR(1) may add little, and a simpler static model could suffice.
+
+A second useful diagnostic is the proportion of sites that switch detection
+status between consecutive periods, i.e., sites that were detected in one period
+but not the next (or vice versa). High switching rates indicate a dynamic
+system where colonization and extinction are frequent; low switching rates
+suggest stable occupancy patterns that are well-suited to the AR(1) model.
+
+```{r eda-switching}
+# Compute detection/nondetection summary per site-period
+detected <- apply(sim$data$y, c(1, 2), function(row) any(row == 1, na.rm = TRUE))
+
+# Switching rate: proportion of sites that change status between consecutive periods
+n_per <- ncol(detected)
+switch_rates <- numeric(n_per - 1)
+for (t in 2:n_per) {
+  switch_rates[t - 1] <- mean(detected[, t] != detected[, t - 1])
+}
+data.frame(
+  transition = paste(seq_len(n_per - 1), "->", 2:n_per),
+  switch_rate = round(switch_rates, 3)
+)
+```
+
+
 ## Fitting the temporal model
 
 Pass `temporal = "ar1"` to `occu()` to fit a multi-season model. The function
 detects the 3D array and sets up the stacked likelihood with the AR(1) temporal
 random effect automatically:
 
-```{r fit, eval = FALSE}
+```{r fit}
 fit <- occu(~ occ_x1, ~ det_x1, data = sim$data, temporal = "ar1", verbose = 0)
 summary(fit)
 ```
@@ -228,7 +412,7 @@ is new:
   the true values.
 
 - **AR(1) correlation $\rho$** should be close to the true value of 0.7,
-  indicating strong temporal persistence --- occupancy conditions in one year
+  indicating strong temporal persistence. Occupancy conditions in one year
   are a good predictor of the next.
 
 - **Innovation SD $\sigma$** should be close to the true value of 0.5, the
@@ -244,7 +428,7 @@ likely occupied next year, and population monitoring can rely on less frequent
 surveys because the system changes slowly. Conservation planning can target
 currently occupied sites with reasonable confidence that they will remain
 occupied in the near term. A low $\rho$ (below 0.3) signals high environmental
-stochasticity --- the species' distribution reshuffles substantially from year to
+stochasticity; the species' distribution reshuffles substantially from year to
 year, and snapshot surveys from a single year may not represent the long-term
 pattern. In this regime, protecting a fixed set of sites is less effective than
 maintaining landscape connectivity so the species can track shifting conditions.
@@ -255,7 +439,7 @@ years) gives a sense of overall population dynamics. If occupancy ranges from
 reflect boom-bust dynamics, cyclic prey availability, or irregular disturbance
 events. A narrow range (0.45 to 0.55) suggests a stable population with the
 AR(1) absorbing only minor fluctuations. Compare these estimates against any
-known events in the study area --- a sharp drop in a particular year may
+known events in the study area. A sharp drop in a particular year may
 coincide with a drought, a harsh winter, or a habitat disturbance.
 
 
@@ -264,13 +448,78 @@ coincide with a drought, a harsh winter, or a habitat disturbance.
 The `temporalCorr()` function extracts the AR(1) parameters with full posterior
 summaries:
 
-```{r temporal-corr, eval = FALSE}
+```{r temporal-corr}
 temporalCorr(fit)
 ```
 
 The period-specific random effects should track the true values reasonably well,
 with wider credible intervals for the endpoints (periods 1 and 5 have fewer
 temporal neighbours).
+
+
+### Interpreting the period-specific random effects
+
+The AR(1) temporal random effects $\hat{\eta}_t$ represent the shared
+year-to-year fluctuation in occupancy after accounting for covariates. Each
+$\hat{\eta}_t$ is an additive shift on the logit scale that raises or lowers
+occupancy across all sites in period $t$. Positive values correspond to
+"good years" (years where environmental conditions favoured the species
+beyond what the covariates predict), and negative values correspond to
+"bad years."
+
+```{r inspect-re}
+# Extract the period random effects from the joint occupancy fit
+if (!is.null(fit$occ_fit) && !is.null(fit$occ_fit$summary.random$period)) {
+  re_df <- fit$occ_fit$summary.random$period
+  re_df$period <- seq_len(nrow(re_df))
+
+  ggplot(re_df, aes(x = period, y = mean)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_pointrange(aes(ymin = `0.025quant`, ymax = `0.975quant`),
+                    colour = "steelblue", linewidth = 0.8) +
+    labs(x = "Period", y = expression(hat(eta)[t]),
+         title = "Estimated temporal random effects") +
+    theme_minimal() +
+    theme_transparent()
+}
+```
+
+The credible intervals on each $\hat{\eta}_t$ reflect how precisely the
+model estimates that year's deviation. Intervals that exclude zero indicate
+a statistically meaningful departure from the average occupancy level.
+Comparing these estimates against known environmental events (droughts,
+pest outbreaks, management interventions) can provide ecological insight into
+what drives year-to-year fluctuation in the system.
+
+The true temporal random effects from our simulation are available for
+validation:
+
+```{r re-recovery}
+# Compare estimated vs true random effects
+if (!is.null(fit$occ_fit) && !is.null(fit$occ_fit$summary.random$period)) {
+  re_comparison <- data.frame(
+    period    = seq_len(sim$truth$n_seasons),
+    true_eta  = sim$truth$temporal_re,
+    est_eta   = re_df$mean[seq_len(sim$truth$n_seasons)],
+    est_lo    = re_df$`0.025quant`[seq_len(sim$truth$n_seasons)],
+    est_hi    = re_df$`0.975quant`[seq_len(sim$truth$n_seasons)]
+  )
+
+  ggplot(re_comparison, aes(x = true_eta, y = est_eta)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_pointrange(aes(ymin = est_lo, ymax = est_hi), colour = "steelblue") +
+    labs(x = "True temporal random effect",
+         y = "Estimated temporal random effect",
+         title = "Recovery of period-specific random effects") +
+    theme_minimal() +
+    theme_transparent()
+}
+```
+
+Points close to the 1:1 line with credible intervals that include the true
+value confirm good parameter recovery. The endpoints (first and last period)
+typically have wider intervals because the AR(1) process has fewer temporal
+neighbours from which to borrow information.
 
 
 ## Checking temporal residuals
@@ -280,12 +529,12 @@ after fitting the AR(1). If the model captures the temporal structure
 adequately, residuals should show no remaining autocorrelation (DW statistic
 near 2):
 
-```{r durbin-watson, eval = FALSE}
+```{r durbin-watson}
 durbinWatson(fit)
 ```
 
 A DW statistic close to 2 with a non-significant p-value confirms the AR(1)
-structure is capturing the temporal dependence adequately --- no residual
+structure is capturing the temporal dependence adequately; no residual
 autocorrelation remains.
 
 Values substantially below 2 (e.g., DW < 1.5 with a small p-value) would
@@ -294,8 +543,8 @@ insufficient. In that case, consider adding a linear time trend as a fixed
 effect alongside the AR(1), or investigate whether a specific year is an outlier.
 
 Residual temporal autocorrelation means the model's temporal structure is not
-flexible enough. Several ecological scenarios produce this. Regime shifts ---
-where the system flips between two stable states (e.g., forested vs. open) ---
+flexible enough. Several ecological scenarios produce this. Regime shifts,
+where the system flips between two stable states (e.g., forested vs. open),
 create autocorrelation patterns that an AR(1) cannot capture because the process
 is non-stationary. Non-stationary trends (accelerating decline, exponential
 growth during invasion) also leave residual autocorrelation because the AR(1)
@@ -306,7 +555,7 @@ restructuring the period definition may be needed.
 
 The general diagnostic suite also works with temporal models:
 
-```{r check-model, eval = FALSE}
+```{r check-model}
 checkModel(fit)
 ```
 
@@ -316,7 +565,7 @@ checkModel(fit)
 The `plot()` method for temporal models shows occupancy trajectories across
 periods:
 
-```{r plot-trajectory, eval = FALSE}
+```{r plot-trajectory}
 plot(fit)
 ```
 
@@ -326,7 +575,7 @@ estimated occupancy probability.
 
 To extract period-specific occupancy estimates programmatically:
 
-```{r fitted-psi, eval = FALSE}
+```{r fitted-psi}
 psi_by_period <- fitted(fit)$psi  # N x T matrix
 colMeans(psi_by_period)
 ```
@@ -341,8 +590,8 @@ loss or increasing pressure from an invasive competitor; this pattern often
 warrants adding a linear time trend as a fixed effect to separate the
 directional signal from stochastic fluctuation. Cyclical variation (occupancy
 oscillating with a regular period) may reflect predator-prey dynamics,
-resource pulses, or climatic oscillations like ENSO. Step changes --- a sudden
-drop or jump between two consecutive periods --- often coincide with discrete
+resource pulses, or climatic oscillations like ENSO. Step changes (a sudden
+drop or jump between two consecutive periods) often coincide with discrete
 management interventions (e.g., habitat restoration, species reintroduction) or
 catastrophic events (wildfire, flooding). Overlaying known events on the
 temporal trajectory plot helps distinguish real ecological signals from sampling
@@ -350,7 +599,7 @@ noise.
 
 You can also compute site-specific trajectories:
 
-```{r site-trajectories, eval = FALSE}
+```{r site-trajectories}
 # Occupancy trajectory for site 1
 psi_by_period[1, ]
 
@@ -360,11 +609,287 @@ head(order(site_var, decreasing = TRUE))
 ```
 
 
+### Occupancy trajectory with credible intervals
+
+A publication-quality trajectory plot shows the mean occupancy per period with
+95% credible intervals, making it easy to identify periods of unusually high or
+low occupancy and to assess whether changes are statistically meaningful.
+
+```{r trajectory-ggplot}
+library(ggplot2)
+
+# Compute per-period mean and quantiles across sites
+psi_summary <- data.frame(
+  period   = seq_len(ncol(psi_by_period)),
+  mean_psi = colMeans(psi_by_period),
+  lo       = apply(psi_by_period, 2, quantile, 0.025),
+  hi       = apply(psi_by_period, 2, quantile, 0.975)
+)
+
+ggplot(psi_summary, aes(x = period, y = mean_psi)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2, fill = "steelblue") +
+  geom_line(linewidth = 1, colour = "steelblue") +
+  geom_point(size = 2.5, colour = "steelblue") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Period", y = "Estimated occupancy",
+       title = "Landscape-level occupancy trajectory") +
+  theme_minimal() +
+  theme_transparent()
+```
+
+The ribbon width reflects cross-site variation in occupancy, not posterior
+uncertainty in the mean. Wide ribbons indicate heterogeneous landscapes where
+some sites are consistently occupied and others are not. Narrow ribbons
+indicate that most sites share a similar occupancy probability.
+
+
+### Site-level occupancy heatmap
+
+When the number of sites is moderate (under ~200), a heatmap of site-by-period
+occupancy probabilities reveals spatial and temporal patterns simultaneously.
+Sites that shift from high to low occupancy over time appear as horizontal
+gradients; years with landscape-wide declines appear as vertical bands.
+
+```{r site-heatmap, fig.height = 6}
+# Reorder sites by mean occupancy for visual clarity
+site_order <- order(rowMeans(psi_by_period))
+psi_ordered <- psi_by_period[site_order, ]
+
+# Convert to long format for ggplot
+psi_long <- data.frame(
+  site   = rep(seq_len(nrow(psi_ordered)), ncol(psi_ordered)),
+  period = rep(seq_len(ncol(psi_ordered)), each = nrow(psi_ordered)),
+  psi    = as.vector(psi_ordered)
+)
+
+ggplot(psi_long, aes(x = period, y = site, fill = psi)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "C", limits = c(0, 1),
+                       name = expression(hat(psi))) +
+  labs(x = "Period", y = "Site (ordered by mean occupancy)",
+       title = "Site-level occupancy over time") +
+  theme_minimal() +
+  theme_transparent()
+```
+
+
+## Derived quantities: colonization and extinction
+
+INLAocc uses an AR(1) temporal random effect rather than explicit colonization
+($\gamma$) and extinction ($\epsilon$) parameters. This is a deliberate design
+choice: the AR(1) is more parsimonious and avoids identifiability issues when
+transition rates interact with covariates. However, users migrating from
+spOccupancy or the classical MacKenzie et al. (2003) framework often need
+colonization and extinction rates for reporting or comparison.
+
+These quantities can be derived from the site-level occupancy posteriors.
+Define:
+
+- **Colonization rate** for period $t$: the proportion of sites that were
+  unoccupied in period $t-1$ but occupied in period $t$.
+- **Extinction rate** for period $t$: the proportion of sites that were
+  occupied in period $t-1$ but unoccupied in period $t$.
+
+Because we work with probabilities rather than binary states, we compute
+*expected* colonization and extinction rates from the estimated $\hat{\psi}$
+matrix. For each site $i$ and transition $t-1 \to t$:
+
+$$\hat{\gamma}_{t} = \frac{\sum_{i} (1 - \hat{\psi}_{i,t-1}) \cdot \hat{\psi}_{i,t}}{\sum_{i} (1 - \hat{\psi}_{i,t-1})}$$
+$$\hat{\epsilon}_{t} = \frac{\sum_{i} \hat{\psi}_{i,t-1} \cdot (1 - \hat{\psi}_{i,t})}{\sum_{i} \hat{\psi}_{i,t-1}}$$
+
+These are population-level averages across sites, conditional on the estimated
+occupancy probabilities.
+
+```{r derived-col-ext}
+n_periods <- ncol(psi_by_period)
+N <- nrow(psi_by_period)
+
+# Compute derived colonization and extinction rates
+col_rates <- numeric(n_periods - 1)
+ext_rates <- numeric(n_periods - 1)
+
+for (t in 2:n_periods) {
+  psi_prev <- psi_by_period[, t - 1]
+  psi_curr <- psi_by_period[, t]
+
+  # Expected colonization: unoccupied -> occupied
+  vacant_prev <- 1 - psi_prev
+  col_rates[t - 1] <- sum(vacant_prev * psi_curr) / sum(vacant_prev)
+
+  # Expected extinction: occupied -> unoccupied
+  ext_rates[t - 1] <- sum(psi_prev * (1 - psi_curr)) / sum(psi_prev)
+}
+
+transitions <- data.frame(
+  transition    = paste(seq_len(n_periods - 1), "->",
+                        seq_len(n_periods - 1) + 1),
+  colonization  = round(col_rates, 4),
+  extinction    = round(ext_rates, 4),
+  turnover      = round(col_rates + ext_rates, 4)
+)
+transitions
+```
+
+Turnover (colonization + extinction) measures the total rate of change in the
+community. High turnover with stable mean occupancy indicates a dynamic
+landscape where sites are constantly gained and lost. High turnover with
+declining occupancy indicates extinction outpacing colonization.
+
+```{r plot-col-ext}
+trans_long <- data.frame(
+  transition = rep(2:n_periods, 2),
+  rate       = c(col_rates, ext_rates),
+  type       = rep(c("Colonization", "Extinction"), each = n_periods - 1)
+)
+
+ggplot(trans_long, aes(x = transition, y = rate, colour = type)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  scale_colour_manual(values = c("Colonization" = "forestgreen",
+                                  "Extinction" = "firebrick")) +
+  labs(x = "Period", y = "Rate", colour = NULL,
+       title = "Derived colonization and extinction rates") +
+  theme_minimal() +
+  theme_transparent()
+```
+
+A note on interpretation: these derived rates are *phenomenological*, not
+mechanistic. They describe the net outcome of occupancy changes, not the
+underlying colonization-extinction process. In the AR(1) model, what looks
+like colonization is a site whose occupancy probability increased above the
+detection threshold; what looks like extinction is a site whose probability
+dropped below it. For mechanistic inference about colonization and extinction
+dynamics themselves, a full dynamic occupancy model (MacKenzie et al. 2003)
+would be more appropriate.
+
+
+## Multi-season models with time-varying covariates
+
+Many ecological drivers change over time: annual temperature anomalies, yearly
+precipitation totals, land-use change indices, or management interventions that
+begin in a specific year. Time-varying covariates are supplied as $N \times T$
+matrices in `occ.covs`, where each column corresponds to a period and each row
+to a site. The AR(1) temporal random effect then captures residual temporal
+variation *after* accounting for the measured covariates.
+
+### Simulating time-varying covariate data
+
+We create a scenario where occupancy is driven by a site-level habitat
+covariate (static) and a yearly climate anomaly (time-varying), with an
+interaction: the climate effect is stronger at sites with better habitat.
+
+```{r sim-time-varying}
+set.seed(2024)
+N <- 120
+J <- 3
+n_seasons <- 8
+
+# Static habitat covariate
+habitat <- rnorm(N)
+
+# Time-varying climate anomaly (same across sites within a year)
+climate_yearly <- rnorm(n_seasons, mean = 0, sd = 0.8)
+climate_mat <- matrix(rep(climate_yearly, each = N), nrow = N, ncol = n_seasons)
+
+# Interaction: climate x habitat
+interact_mat <- climate_mat * habitat
+
+# AR(1) temporal noise
+rho_true <- 0.5
+sigma_true <- 0.3
+eta <- numeric(n_seasons)
+eta[1] <- rnorm(1, 0, sigma_true / sqrt(1 - rho_true^2))
+for (t in 2:n_seasons) {
+  eta[t] <- rho_true * eta[t - 1] + rnorm(1, 0, sigma_true)
+}
+
+# True occupancy and detection
+beta_0 <- 0.5; beta_hab <- 0.8; beta_clim <- 0.4; beta_int <- 0.3
+y_array <- array(NA, dim = c(N, n_seasons, J))
+z_mat <- matrix(NA, N, n_seasons)
+
+for (t in seq_len(n_seasons)) {
+  logit_psi <- beta_0 + beta_hab * habitat + beta_clim * climate_mat[, t] +
+               beta_int * interact_mat[, t] + eta[t]
+  psi_t <- plogis(logit_psi)
+  z_mat[, t] <- rbinom(N, 1, psi_t)
+  for (j in seq_len(J)) {
+    y_array[, t, j] <- rbinom(N, 1, z_mat[, t] * 0.6)
+  }
+}
+
+# Package as INLAocc data
+tv_data <- list(
+  y = y_array,
+  occ.covs = list(
+    habitat      = habitat,
+    climate      = climate_mat,
+    hab_x_clim   = interact_mat
+  ),
+  det.covs = list(),
+  coords = cbind(x = runif(N), y = runif(N))
+)
+```
+
+### Fitting the model with time-varying covariates
+
+The formula includes the static covariate, the time-varying covariate, and
+their interaction. INLAocc handles the dimensional differences automatically:
+`habitat` is a length-$N$ vector (recycled across periods), while `climate`
+and `hab_x_clim` are $N \times T$ matrices.
+
+```{r fit-time-varying}
+fit_tv <- occu(
+  ~ habitat + climate + hab_x_clim,
+  ~ 1,
+  data = tv_data,
+  temporal = "ar1",
+  verbose = 0
+)
+summary(fit_tv)
+```
+
+The `habitat` coefficient captures the time-averaged effect of habitat quality
+on occupancy. The `climate` coefficient captures the direct effect of yearly
+climate anomalies: positive values mean warmer (or wetter) years increase
+occupancy. The `hab_x_clim` interaction captures whether climate sensitivity
+varies with habitat quality. A positive interaction means the climate effect
+is amplified at high-habitat sites; species in good habitat respond more
+strongly to favourable climate years, perhaps because resource availability
+mediates the climate response.
+
+### Comparing models with and without time-varying covariates
+
+To test whether the time-varying covariate adds explanatory power beyond the
+temporal random effect:
+
+```{r compare-tv}
+fit_static_only <- occu(
+  ~ habitat, ~ 1,
+  data = tv_data,
+  temporal = "ar1",
+  verbose = 0
+)
+
+compare_models(
+  static = fit_static_only,
+  time_varying = fit_tv,
+  criterion = "waic"
+)
+```
+
+If the time-varying model has substantially lower WAIC, the climate covariate
+captures temporal variation that the AR(1) alone cannot explain. The AR(1)
+in the time-varying model then absorbs only the residual temporal noise not
+explained by climate, and its innovation variance $\sigma_\eta$ should be
+smaller than in the static-only model.
+
+
 ## Prediction at new sites and times
 
 To predict occupancy at new covariate values across all periods:
 
-```{r predict-temporal, eval = FALSE}
+```{r predict-temporal}
 new_sites <- data.frame(occ_x1 = c(-1, 0, 1))
 preds <- predict(fit, X.0 = new_sites, type = "occupancy")
 head(preds)
@@ -374,7 +899,7 @@ Predictions are period-specific: the temporal random effect shifts all predictio
 
 To predict at a specific period only (e.g., the most recent year):
 
-```{r predict-period, eval = FALSE}
+```{r predict-period}
 predict(fit, period = 5)
 ```
 
@@ -383,7 +908,7 @@ predict(fit, period = 5)
 
 For out-of-sample validation of the temporal model:
 
-```{r kfold-temporal, eval = FALSE}
+```{r kfold-temporal}
 fit_cv <- occu(~ occ_x1, ~ det_x1, data = sim$data,
                temporal = "ar1", k.fold = 5, verbose = 0)
 fit_cv$k.fold
@@ -399,7 +924,7 @@ some regions (spatial structure) *and* more common in some years (temporal
 structure). INLAocc fits joint space-time models by combining the SPDE spatial
 random field with the AR(1) temporal random effect:
 
-```{r space-time, eval = FALSE}
+```{r space-time}
 fit_st <- occu(
   ~ occ_x1, ~ det_x1, data = sim$data,
   spatial = sim$data$coords,
@@ -416,11 +941,112 @@ additive on the logit scale:
 $$\text{logit}(\psi_{it}) = \mathbf{x}_i^\top \boldsymbol{\beta} + w(\mathbf{s}_i) + \eta_t$$
 
 Since this simulated dataset has no spatial structure (coordinates were not
-used in simulation), the spatial variance is estimated near zero (0.18),
+used in simulation), the spatial variance is estimated near zero,
 and the temporal parameters are essentially unchanged. In real data where
 spatial structure exists, including it alongside the temporal component
 typically sharpens fixed-effect estimates by absorbing an additional source of
 confounding variation.
+
+### When does the spatial component help?
+
+The spatial component is worth including when sites that are close together
+have more similar occupancy than distant sites, which is common for most
+species. The spatial random field absorbs this similarity, preventing it from
+inflating the residual variance and producing overconfident fixed-effect
+estimates. In practice, adding the spatial component:
+
+- **Reduces confounding** between spatial covariates and spatially structured
+  unmeasured variables.
+- **Improves predictions** at unsampled locations by borrowing information from
+  nearby sites.
+- **Slightly increases computation** because the SPDE mesh adds parameters.
+  For large datasets ($N > 500$), this cost is meaningful but usually
+  worthwhile.
+
+### A worked example with both spatial and temporal structure
+
+To demonstrate the joint model on data that actually contain both structures,
+we simulate a dataset where occupancy depends on a spatial gradient and an
+AR(1) temporal process.
+
+```{r sim-space-time}
+set.seed(2025)
+N_st <- 100
+J_st <- 3
+n_seasons_st <- 6
+
+# Spatial coordinates on a unit square
+coords_st <- cbind(x = runif(N_st), y = runif(N_st))
+
+# Spatial effect: smooth gradient from southwest to northeast
+spatial_effect <- 1.5 * (coords_st[, 1] + coords_st[, 2]) / 2
+
+# AR(1) temporal random effect
+rho_st <- 0.7
+sigma_st <- 0.4
+eta_st <- numeric(n_seasons_st)
+eta_st[1] <- rnorm(1, 0, sigma_st / sqrt(1 - rho_st^2))
+for (t in 2:n_seasons_st) {
+  eta_st[t] <- rho_st * eta_st[t - 1] + rnorm(1, 0, sigma_st)
+}
+
+# Generate data
+y_st <- array(NA, dim = c(N_st, n_seasons_st, J_st))
+for (t in seq_len(n_seasons_st)) {
+  psi_t <- plogis(-0.5 + spatial_effect + eta_st[t])
+  z_t <- rbinom(N_st, 1, psi_t)
+  for (j in seq_len(J_st)) {
+    y_st[, t, j] <- rbinom(N_st, 1, z_t * 0.5)
+  }
+}
+
+st_data <- list(
+  y = y_st,
+  occ.covs = list(),
+  det.covs = list(),
+  coords = coords_st
+)
+```
+
+```{r fit-space-time-full}
+# Temporal only (no spatial)
+fit_temporal_only <- occu(
+  ~ 1, ~ 1, data = st_data,
+  temporal = "ar1", verbose = 0
+)
+
+# Joint space-time model
+fit_space_time <- occu(
+  ~ 1, ~ 1, data = st_data,
+  spatial = coords_st,
+  temporal = "ar1", verbose = 0
+)
+
+compare_models(
+  temporal_only = fit_temporal_only,
+  space_time    = fit_space_time,
+  criterion     = "waic"
+)
+```
+
+The space-time model should receive the majority of the WAIC weight because
+the data contain a genuine spatial gradient. The temporal parameters ($\rho$,
+$\sigma_\eta$) should be similar between the two models because the spatial
+and temporal structures are independent by construction.
+
+```{r st-temporal-params}
+# Temporal correlation in both models
+temporalCorr(fit_temporal_only)
+temporalCorr(fit_space_time)
+```
+
+If the spatial and temporal estimates are nearly identical across the two
+models, this confirms the separability assumption: the spatial pattern is
+stable across years, and the temporal fluctuation is uniform across space.
+When this assumption is violated (for example, if some regions decline
+faster than others), the separable model will average over the
+heterogeneity. In that case, spatially varying coefficients (SVC models; see
+`vignette("svc-models")`) may be needed.
 
 For details on mesh construction, spatial priors, and mapped predictions,
 see `vignette("spatial-models")`.
@@ -432,7 +1058,7 @@ Multi-species temporal models combine the multi-species framework with the
 AR(1) temporal structure. Each species gets its own AR(1) process, capturing
 the fact that good years for one species may not be good years for another:
 
-```{r multi-species-temporal, eval = FALSE}
+```{r multi-species-temporal}
 sim_mt <- simTMsOcc(
   N = 50, J = 3, n_species = 5, n_seasons = 4,
   seed = 100
@@ -446,9 +1072,9 @@ summary(fit_mt)
 ```
 
 Species with the highest temporal autocorrelation have the most persistent
-occupancy patterns --- once they colonize a landscape, they tend to stay. Species
+occupancy patterns: once they colonize a landscape, they tend to stay. Species
 with low autocorrelation indicate more volatile dynamics. The community-level
-summary averages across species, giving an overall sense of how persistent
+summary averages across species, indicating how persistent
 occupancy is in this assemblage.
 
 For details on the multi-species framework, see
@@ -472,7 +1098,7 @@ compare_models(null = fit_null, covariate = fit_cov, criterion = "waic")
 
 The temporal model should have a substantially lower WAIC and receive the
 majority of the model weight. This is expected, since the data were generated
-with $\rho = 0.7$ --- strong temporal structure exists and ignoring it degrades
+with $\rho = 0.7$, so strong temporal structure exists and ignoring it degrades
 model fit.
 
 When would the static model be preferred? If $\rho \approx 0$ (no temporal
@@ -485,49 +1111,140 @@ model is sufficient.
 
 ## Practical guidance
 
-**Minimum number of seasons.** At least 3--4 seasons are needed for stable
-AR(1) estimation. With only 2 seasons, $\rho$ is very weakly identified because
-there is only one transition to inform the autocorrelation. Five or more seasons
-produce substantially tighter credible intervals on the temporal parameters.
+### How many seasons are needed?
 
-**Study design considerations.** For trend estimation, the number of periods
-matters more than the number of visits per period, up to a point. Five periods
-with 3 visits each gives a reasonable AR(1) estimate; 10 or more periods are
-needed for nonlinear trends or for detecting changes in $\rho$ over time. Within
-each period, the timing of visits affects detection parameters --- surveys
-conducted early and late in a season may yield different detection probabilities
-if the species' activity varies seasonally. If visit timing is inconsistent
-across years, include Julian date as a detection covariate to absorb this
-variation rather than letting it leak into the occupancy estimates.
+At least 3--4 seasons are needed for stable AR(1) estimation. With only 2
+seasons, $\rho$ is very weakly identified because there is only one transition
+to inform the autocorrelation. Five or more seasons produce substantially
+tighter credible intervals on the temporal parameters.
 
-**When to use the static model instead.** If $\rho$ is estimated near zero and
-the temporal model does not improve WAIC over the static model, use the static
-model. It is simpler, faster, and the temporal random effects are adding noise
-rather than signal.
+The following table summarises approximate expectations for different time
+series lengths:
 
-**Time-varying covariates.** Occupancy covariates that change across periods
-(e.g., yearly mean temperature, annual land-use change) should be supplied as
-$N \times T$ matrices in `occ.covs`. The AR(1) temporal effect then captures
-residual temporal variation *after* accounting for the measured covariates.
-This is analogous to including both fixed and random effects for time in a
-mixed model.
+| Seasons | AR(1) estimation | Trend detection | Colonization/extinction |
+|:-------:|:----------------:|:---------------:|:-----------------------:|
+| 2       | Unreliable       | Not possible    | Not meaningful          |
+| 3--4    | Adequate         | Linear only     | Very noisy              |
+| 5--7    | Good             | Linear + noise  | Moderate precision      |
+| 8--15   | Excellent        | Nonlinear       | Good precision          |
+| 15+     | Excellent        | Regime shifts   | Excellent               |
 
-**Detection varies by season.** Detection conditions often change across
-seasons --- different observers, different phenological timing, different
-weather. INLAocc estimates separate detection parameters for each period by
-default when it detects a 3D detection array. This is usually the right
-behaviour. If you want to constrain detection to be constant across periods
-(e.g., standardized protocol), collapse the detection array to 2D before
-fitting.
+For detecting *nonlinear* temporal patterns (e.g., a decline that accelerates
+over time), 10 or more periods are typically needed. For detecting changes in
+$\rho$ itself over time (non-stationarity), even longer series are required
+because the autocorrelation parameter converges more slowly than the mean.
 
-**Non-stationary temporal patterns.** The AR(1) model assumes stationarity ---
-the same autocorrelation and innovation variance apply throughout the time
-series. If you suspect a monotonic trend (e.g., consistent decline due to
-habitat loss), the AR(1) will partially capture it through a sequence of
-same-sign innovations, but it is more efficient to add a linear time trend as a
-fixed effect:
+### AR(1) vs IID year effects
 
-```{r time-trend, eval = FALSE}
+INLAocc supports two temporal random effect structures:
+
+- **`temporal = "ar1"`**: Year effects are temporally correlated. $\eta_t$
+  depends on $\eta_{t-1}$ through the autocorrelation $\rho$. This is
+  appropriate when occupancy in one year predicts occupancy in the next,
+  the typical case for species with site fidelity, slow population dynamics,
+  or persistent habitat quality.
+
+- **`temporal = "iid"`**: Year effects are independent draws from a common
+  distribution. Each year's random effect is unrelated to the previous year.
+  This is appropriate when temporal variation is driven by unpredictable events
+  (e.g., stochastic weather, irregular disturbance) and there is no reason to
+  expect temporal persistence.
+
+When in doubt, fit both and compare via WAIC:
+
+```{r ar1-vs-iid}
+fit_ar1 <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                temporal = "ar1", verbose = 0)
+fit_iid <- occu(~ occ_x1, ~ det_x1, data = sim$data,
+                temporal = "iid", verbose = 0)
+
+compare_models(ar1 = fit_ar1, iid = fit_iid, criterion = "waic")
+```
+
+Since these data were simulated with $\rho = 0.7$, the AR(1) model should be
+strongly preferred. For species with genuinely independent year-to-year
+fluctuations, the IID model will have similar or lower WAIC.
+
+A practical rule: if the Durbin-Watson test on an IID fit shows significant
+residual autocorrelation, switch to AR(1). If the AR(1) fit estimates $\rho$
+near zero with a credible interval spanning zero, the IID model is sufficient.
+
+### When temporal structure does not help
+
+Not every multi-season dataset benefits from a temporal random effect. The
+temporal model adds parameters ($\rho$, $\sigma_\eta$, and the period-specific
+random effects), and if these parameters are poorly identified, the model
+wastes degrees of freedom and may produce wider credible intervals on the
+fixed effects than a simpler model.
+
+Temporal structure is unlikely to help when:
+
+1. **Only 2 seasons exist.** There is one transition, which provides almost no
+   information about $\rho$. Pool the data into a single-season model or treat
+   each season independently.
+
+2. **Temporal variation is fully explained by covariates.** If a time-varying
+   covariate (e.g., annual precipitation) captures all year-to-year variation,
+   the AR(1) innovation variance collapses to zero and the temporal random
+   effect is unnecessary.
+
+3. **The study design has irregular gaps.** If some periods are missing for most
+   sites, the AR(1) cannot bridge the gap effectively, and the information
+   gain from temporal correlation is minimal.
+
+4. **Detection is the dominant source of variation.** When occupancy is nearly
+   constant but detection varies strongly across years (e.g., due to changing
+   survey effort), a temporal random effect on detection may be more
+   appropriate than one on occupancy. INLAocc handles this through
+   period-specific detection estimation.
+
+### Study design considerations
+
+For trend estimation, the number of periods matters more than the number of
+visits per period, up to a point. Five periods with 3 visits each gives a
+reasonable AR(1) estimate; 10 or more periods are needed for nonlinear trends
+or for detecting changes in $\rho$ over time. Within each period, the timing
+of visits affects detection parameters. Surveys conducted early and late in
+a season may yield different detection probabilities if the species' activity
+varies seasonally. If visit timing is inconsistent across years, include
+Julian date as a detection covariate to absorb this variation rather than
+letting it leak into the occupancy estimates.
+
+Unbalanced designs (different numbers of visits across periods, or sites
+surveyed in some years but not others) are handled naturally by INLAocc.
+Missing visits are coded as `NA` in the 3D detection array, and the model
+simply omits them from the likelihood. However, periods with very few visits
+or very few surveyed sites contribute less information, and their occupancy
+estimates will have wider credible intervals.
+
+### Time-varying covariates
+
+Occupancy covariates that change across periods (e.g., yearly mean
+temperature, annual land-use change) should be supplied as $N \times T$
+matrices in `occ.covs`. The AR(1) temporal effect then captures residual
+temporal variation *after* accounting for the measured covariates. This is
+analogous to including both fixed and random effects for time in a mixed
+model. See the "Multi-season models with time-varying covariates" section
+above for a worked example.
+
+### Detection varies by season
+
+Detection conditions often change across seasons (different observers,
+different phenological timing, different weather). INLAocc estimates separate
+detection parameters for each period by default when it detects a 3D detection
+array. This is usually the right behaviour. If you want to constrain detection
+to be constant across periods (e.g., standardized protocol), collapse the
+detection array to 2D before fitting.
+
+### Non-stationary temporal patterns
+
+The AR(1) model assumes stationarity: the same autocorrelation and
+innovation variance apply throughout the time series. If you suspect a
+monotonic trend (e.g., consistent decline due to habitat loss), the AR(1) will
+partially capture it through a sequence of same-sign innovations, but it is
+better to add a linear time trend as a fixed effect:
+
+```{r time-trend}
 # Add a linear time index as a covariate
 sim$data$occ.covs$time_index <- matrix(
   rep(1:5, each = 100), nrow = 100, ncol = 5
@@ -539,19 +1256,771 @@ fit_trend <- occu(
 )
 ```
 
-The fixed time trend captures the directional component, and the AR(1) captures
-the residual year-to-year fluctuation around the trend.
+The fixed time trend captures the directional component, and the AR(1)
+captures the residual year-to-year fluctuation around the trend. Checking
+whether the time trend coefficient is significantly different from zero (its
+95% credible interval excludes zero) provides a formal test for directional
+change.
 
-**Computational considerations.** Space-time models (spatial + temporal) stack
-$N \times T$ site-period combinations, so the effective sample size grows
-quickly. For large $N$ (> 500 sites) and long time series ($T$ > 10), consider:
+### Designing monitoring programmes for temporal models
 
-- Fitting spatial-only and temporal-only models first to assess which component
-  matters more.
-- Using a coarser mesh for the spatial SPDE to reduce the number of mesh nodes.
+The statistical power of a multi-season occupancy model depends on the
+interaction between three design dimensions: the number of sites ($N$), the
+number of periods ($T$), and the number of visits per period ($J$). These
+dimensions trade off against each other under a fixed survey budget, and the
+optimal allocation depends on the inferential goal.
 
+**For estimating $\rho$ (temporal autocorrelation):** The number of periods
+$T$ is the primary driver. Each additional period adds one temporal
+transition, and the AR(1) correlation is estimated from these transitions.
+With 3 periods there are only 2 transitions; with 10 there are 9. Increasing
+$N$ helps by reducing the variance of the per-period occupancy estimate, but
+it cannot compensate for too few periods. A minimum of 5 periods is
+recommended for reliable $\rho$ estimation; 8--10 is preferable.
+
+**For estimating occupancy trends (fixed time effects):** Both $T$ and $N$
+matter. The trend coefficient is estimated from the contrast in occupancy
+across periods, and the precision of each period's occupancy estimate depends
+on $N$ and $J$. A linear trend requires at least 3 periods; detecting
+curvature (quadratic trends) requires 5+.
+
+**For estimating covariate effects:** The number of sites $N$ is most
+important, because covariate effects are estimated cross-sectionally. More
+sites provide more covariate variation, improving the precision of
+$\boldsymbol{\beta}$. The temporal dimension helps primarily by increasing
+the total number of site-period observations, but the effective sample size
+is reduced by the temporal autocorrelation (highly correlated periods
+contribute less independent information than uncorrelated ones).
+
+**For separating detection from occupancy:** The number of visits $J$ per
+period is critical. With $J = 2$, detection and occupancy are weakly
+identified and the model relies heavily on prior information. With $J = 3$,
+identification is adequate for most scenarios. Beyond $J = 4$, the marginal
+gain from additional visits is small, and the budget is better spent on
+additional sites or periods.
+
+A practical rule of thumb for a balanced design: allocate roughly 50% of
+the budget to sites, 30% to periods, and 20% to replicate visits within
+periods. This yields a design like $N = 100$, $T = 8$, $J = 3$, which is
+adequate for most temporal occupancy analyses.
+
+### Computational considerations
+
+Space-time models (spatial + temporal) stack $N \times T$ site-period
+combinations, so the effective sample size grows quickly. For large $N$
+(> 500 sites) and long time series ($T$ > 10), consider:
+
+- Fitting spatial-only and temporal-only models first to assess which
+  component matters more.
+- Using a coarser mesh for the spatial SPDE to reduce the number of mesh
+  nodes.
 - Subsetting to a region of interest if the full dataset is too large.
 
 The temporal component alone (without spatial) is fast even for large $N$,
 because the AR(1) precision matrix is tridiagonal and INLA exploits its
-sparsity.
+sparsity. A dataset with 500 sites and 10 periods (5,000 site-periods) fits
+in seconds on a modern laptop. Adding the spatial SPDE increases this to
+minutes, depending on mesh resolution.
+
+### Interpreting AR(1) parameters for management
+
+The estimated $\rho$ and $\sigma_\eta$ have direct implications for
+conservation planning:
+
+| Parameter regime              | Ecological interpretation | Management implication |
+|:------------------------------|:-------------------------|:-----------------------|
+| High $\rho$, low $\sigma$    | Stable, persistent       | Protect current sites  |
+| High $\rho$, high $\sigma$   | Persistent shocks        | Buffer against disturbance |
+| Low $\rho$, low $\sigma$     | Stable but reshuffling   | Maintain connectivity  |
+| Low $\rho$, high $\sigma$    | Volatile, unpredictable  | Landscape-level protection |
+
+These regimes can guide monitoring frequency. High-$\rho$ systems change
+slowly and can be surveyed less frequently (every 2--3 years) without losing
+important temporal information. Low-$\rho$ systems require annual monitoring
+because the state changes unpredictably from year to year.
+
+
+## Prior specification for temporal parameters
+
+INLA assigns default priors to the AR(1) hyperparameters: a PC prior on the
+marginal precision $\tau_\eta = 1/\sigma^2_\eta$ and a uniform prior on
+$\rho \in (-1, 1)$. The defaults are weakly informative, which works well in
+most cases. When you have strong prior information about the temporal
+structure, you can pass custom priors through the `priors` argument of
+`occu()`.
+
+The relevant parameters are:
+
+- **$\sigma_\eta$ (innovation SD):** Controls the magnitude of year-to-year
+  fluctuation. Under the default PC prior, $\text{Prob}(\sigma > 1) = 0.01$,
+  which gently penalises large temporal variances. If your system is known to
+  have small year-to-year variation (e.g., a stable forest bird community),
+  you can tighten this by decreasing the reference SD. If you study a highly
+  variable system (e.g., desert ephemeral ponds), you may relax it.
+
+- **$\rho$ (AR correlation):** The default uniform prior on $(-1, 1)$ is
+  non-informative. If you have biological reason to expect strong positive
+  persistence (e.g., a territorial species with high site fidelity), you can
+  constrain $\rho$ to positive values. In practice, negative temporal
+  autocorrelation is rare in occupancy data, and constraining $\rho > 0$
+  can improve convergence when the time series is short.
+
+```{r prior-example}
+# Custom prior: tighter temporal variance, positive-only rho
+fit_priors <- occu(
+  ~ occ_x1, ~ det_x1,
+  data = sim$data,
+  temporal = "ar1",
+  priors = list(
+    temporal = list(
+      prec = list(prior = "pc.prec", param = c(0.5, 0.01)),  # P(sigma > 0.5) = 0.01
+      rho  = list(prior = "normal", param = c(0, 0.15))      # Penalised toward 0
+    )
+  ),
+  verbose = 0
+)
+temporalCorr(fit_priors)
+```
+
+The effect of prior choice is strongest when data are sparse (few seasons,
+few sites). With 10+ seasons and 100+ sites, the likelihood dominates the
+prior and the posterior is largely data-driven. A useful sensitivity check is
+to fit the same model with the default and custom priors and compare the
+posteriors: if they differ substantially, the data are not informative enough
+to override the prior, and conclusions should be hedged accordingly.
+
+
+## Handling unequal sampling across seasons
+
+Real monitoring programmes rarely survey every site in every year. Some sites
+are added part-way through the study, others are dropped due to access issues,
+and within a given year some visits may be cancelled due to weather. INLAocc
+handles all of these cases through `NA` values in the 3D detection array.
+
+### Worked example: staggered site entry
+
+We simulate a dataset where half the sites are surveyed for all 8 years, but
+the other half only enter the study in year 4.
+
+```{r unequal-sim}
+set.seed(2024)
+N_ue <- 100
+J_ue <- 3
+n_seasons_ue <- 8
+
+# Simulate full data
+sim_ue <- simTOcc(
+  N = N_ue, J = J_ue, n_seasons = n_seasons_ue,
+  beta_occ = c(0.3, 0.5),
+  beta_det = c(0.2, -0.3),
+  rho = 0.6, sigma_t = 0.4,
+  seed = 55
+)
+
+# Knock out first 3 years for sites 51-100
+sim_ue$data$y[51:100, 1:3, ] <- NA
+
+# Verify the missing structure
+cat("Year-by-year sample sizes:\n")
+n_surveyed <- apply(sim_ue$data$y, 2, function(y_t) {
+  sum(apply(y_t, 1, function(row) any(!is.na(row))))
+})
+data.frame(period = 1:n_seasons_ue, n_sites_surveyed = n_surveyed)
+```
+
+### Fitting the model with unequal sampling
+
+The model call is identical; INLAocc automatically handles the missing
+values:
+
+```{r fit-unequal}
+fit_ue <- occu(
+  ~ occ_x1, ~ det_x1,
+  data = sim_ue$data,
+  temporal = "ar1", verbose = 0
+)
+summary(fit_ue)
+```
+
+The AR(1) parameter estimates remain well-identified because the complete
+sites (1--50) inform the temporal structure across all 8 periods, and the
+partial sites (51--100) contribute information from period 4 onward. The
+credible intervals for $\rho$ will be slightly wider than with complete data,
+reflecting the reduced information in early periods.
+
+### Visualizing the effect of missing data
+
+We can compare per-period occupancy estimates and see that early periods have
+wider uncertainty because they are informed by fewer sites:
+
+```{r vis-unequal}
+psi_ue <- fitted(fit_ue)$psi
+
+psi_ue_summary <- data.frame(
+  period   = seq_len(n_seasons_ue),
+  mean_psi = colMeans(psi_ue, na.rm = TRUE),
+  lo       = apply(psi_ue, 2, quantile, 0.025, na.rm = TRUE),
+  hi       = apply(psi_ue, 2, quantile, 0.975, na.rm = TRUE),
+  n_sites  = n_surveyed
+)
+
+ggplot(psi_ue_summary, aes(x = period, y = mean_psi)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2, fill = "steelblue") +
+  geom_line(linewidth = 1, colour = "steelblue") +
+  geom_point(aes(size = n_sites), colour = "steelblue") +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_size_continuous(range = c(1.5, 4), name = "Sites surveyed") +
+  labs(x = "Period", y = "Estimated occupancy",
+       title = "Occupancy trajectory with staggered site entry") +
+  theme_minimal() +
+  theme_transparent()
+```
+
+The point sizes reflect the number of sites surveyed in each period, making
+it visually clear where the data are sparse. The AR(1) temporal correlation
+helps stabilise estimates in data-poor periods by borrowing information from
+adjacent years, a key advantage of the structured temporal model over
+treating each year independently.
+
+
+## Posterior predictive checks
+
+Posterior predictive checks assess whether the fitted model generates data
+that resemble the observed data. If the model is adequate, replicated
+datasets drawn from the posterior should be statistically indistinguishable
+from the real data. The `ppcOccu()` function implements this by repeatedly
+simulating new detection histories from the fitted model and comparing a
+summary statistic between observed and replicated data.
+
+```{r ppc-temporal}
+ppc_result <- ppcOccu(fit, fit.stat = "freeman-tukey", group = 1, n.samples = 500)
+
+# Bayesian p-value: values near 0.5 indicate good fit
+cat(sprintf("Bayesian p-value: %.3f\n", ppc_result$bayesian.p))
+```
+
+A Bayesian p-value close to 0.5 indicates the model generates data
+consistent with the observations. Values near 0 or 1 suggest systematic lack
+of fit. For temporal models, run the check on each period
+separately to identify years where the model fits poorly, since a single
+anomalous year (e.g., a flood or drought) can dominate the overall p-value.
+
+```{r ppc-by-period}
+# Per-period posterior predictive checks
+ppc_by_period <- data.frame(
+  period = seq_len(sim$truth$n_seasons),
+  bayesian_p = NA_real_
+)
+
+for (t in seq_len(sim$truth$n_seasons)) {
+  period_fit <- fit$period_fits[[t]]
+  if (!is.null(period_fit)) {
+    ppc_t <- ppcOccu(period_fit, fit.stat = "freeman-tukey",
+                     group = 1, n.samples = 500)
+    ppc_by_period$bayesian_p[t] <- ppc_t$bayesian.p
+  }
+}
+ppc_by_period
+```
+
+Periods with Bayesian p-values consistently above 0.9 or below 0.1 deserve
+closer inspection. The model may be generating data that are too variable
+(p-value near 1) or not variable enough (p-value near 0) for those specific
+years. Common causes include: unmodelled heterogeneity in detection during
+that year, a covariate effect that changed between periods, or a genuine
+ecological event (die-off, invasion) that the AR(1) smooth cannot capture.
+
+
+## Prediction with uncertainty at new sites
+
+The `predict()` method for temporal models generates occupancy predictions at
+new covariate values across all or selected periods. This is the primary
+tool for generating species distribution maps at past, current, or
+interpolated time points.
+
+### Predicting along a covariate gradient
+
+A common use case is predicting how occupancy changes along an environmental
+gradient, separately for each period. This reveals whether the
+species-environment relationship is stable over time or shifts due to the
+temporal random effect.
+
+```{r predict-gradient}
+# Create a gradient of 50 points spanning the covariate range
+cov_gradient <- data.frame(occ_x1 = seq(-2, 2, length.out = 50))
+
+preds_gradient <- predict(fit, X.0 = as.matrix(cov_gradient), type = "occupancy")
+
+# Extract predictions for each period
+pred_df <- do.call(rbind, lapply(seq_along(preds_gradient$psi.0), function(i) {
+  p <- preds_gradient$psi.0[[i]]
+  data.frame(
+    period  = preds_gradient$periods[i],
+    occ_x1  = cov_gradient$occ_x1,
+    psi     = p$mean,
+    lo      = p$quantiles[, 1],
+    hi      = p$quantiles[, 3]
+  )
+}))
+pred_df$period <- factor(pred_df$period)
+
+ggplot(pred_df, aes(x = occ_x1, y = psi, colour = period, fill = period)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.08, colour = NA) +
+  geom_line(linewidth = 0.8) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Covariate value", y = "Predicted occupancy",
+       colour = "Period", fill = "Period",
+       title = "Occupancy response curves by period") +
+  theme_minimal() +
+  theme_transparent()
+```
+
+The curves share the same shape (determined by the fixed-effect slope) but
+are shifted vertically by the period-specific temporal random effect.
+Periods with positive $\eta_t$ shift the curve upward; periods with negative
+$\eta_t$ shift it downward. The separation between the highest and lowest
+curves visualises the magnitude of year-to-year fluctuation in the system.
+
+### Predicting at specific periods
+
+When you need predictions for only a subset of periods (e.g., the first and
+last year for a before-after comparison):
+
+```{r predict-specific-periods}
+preds_first_last <- predict(fit, X.0 = as.matrix(cov_gradient),
+                            period = c(1, 5), type = "occupancy")
+
+# Compare occupancy at the covariate mean (occ_x1 = 0)
+mid_idx <- 25  # middle of the gradient
+for (nm in names(preds_first_last$psi.0)) {
+  p <- preds_first_last$psi.0[[nm]]
+  cat(sprintf("%s: psi = %.3f (%.3f, %.3f)\n",
+              nm, p$mean[mid_idx], p$quantiles[mid_idx, 1], p$quantiles[mid_idx, 3]))
+}
+```
+
+The difference in predicted occupancy between two periods, at the same
+covariate value, isolates the temporal component. If the credible intervals
+do not overlap, the occupancy change between those periods is statistically
+supported.
+
+### Predicting detection probability
+
+In addition to occupancy, `predict()` supports `type = "detection"` to
+generate detection probability predictions at new covariate values. This is
+useful when assessing whether survey conditions are adequate for reliable
+detection, or when planning future surveys under specific conditions.
+
+```{r predict-detection}
+# Predict detection probability along a gradient of the detection covariate
+det_gradient <- data.frame(det_x1 = seq(-2, 2, length.out = 50))
+preds_det <- predict(fit, X.p.0 = as.matrix(det_gradient), type = "detection")
+
+if (!is.null(preds_det$p.0)) {
+  det_pred_df <- data.frame(
+    det_x1 = det_gradient$det_x1,
+    p      = preds_det$p.0$mean,
+    lo     = preds_det$p.0$quantiles[, 1],
+    hi     = preds_det$p.0$quantiles[, 3]
+  )
+
+  ggplot(det_pred_df, aes(x = det_x1, y = p)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2, fill = "darkorange") +
+    geom_line(linewidth = 1, colour = "darkorange") +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(x = "Detection covariate value", y = "Detection probability",
+         title = "Detection response curve") +
+    theme_minimal() +
+    theme_transparent()
+}
+```
+
+Detection predictions do not vary across periods in the same way as
+occupancy predictions, because the detection submodel does not include a
+temporal random effect. However, if detection covariates vary by period
+(e.g., survey date or observer effort), the predicted detection probability
+will differ across periods through the covariate values. This distinction
+matters for survey planning: the occupancy temporal random effect is a
+property of the species, while period-to-period variation in detection is
+a property of the survey design that can be controlled.
+
+
+## Expanded multi-species temporal analysis
+
+The basic multi-species temporal model shown earlier provides community-level
+summaries, but individual species trajectories are often the primary interest.
+Here we demonstrate a fuller workflow: simulating a multi-species temporal
+dataset, fitting the model, extracting species-specific occupancy
+trajectories, and visualizing them.
+
+### Simulation with contrasting species dynamics
+
+We simulate 5 species with deliberately different temporal dynamics to
+illustrate the model's ability to recover species-specific patterns.
+
+```{r ms-sim-detailed}
+sim_ms <- simTMsOcc(
+  N = 80, J = 3, n_species = 5, n_seasons = 6,
+  beta_comm_mean = c(0.5, 0.3),    # community mean: moderate occupancy, positive covariate
+  beta_comm_sd   = c(1.5, 0.6),    # high among-species variation
+  alpha_comm_mean = c(0.0, -0.2),  # community detection mean
+  alpha_comm_sd   = c(0.8, 0.3),
+  rho = 0.6, sigma_t = 0.5,
+  seed = 42
+)
+
+str(sim_ms$data$y)
+```
+
+### Fitting and extracting species-specific results
+
+```{r ms-fit-detailed}
+fit_ms <- occu(
+  ~ occ_x1, ~ det_x1,
+  data = sim_ms$data,
+  multispecies = TRUE,
+  temporal = "ar1",
+  verbose = 0
+)
+summary(fit_ms)
+```
+
+### Species-specific occupancy trajectories
+
+We extract the fitted occupancy values per species and period to build
+a panel plot showing how each species' occupancy evolves over time.
+
+```{r ms-trajectories, fig.height = 7}
+n_sp <- length(fit_ms$species_fits)
+n_per <- fit_ms$n_periods
+
+# Build trajectory data.frame
+traj_list <- vector("list", n_sp)
+for (s in seq_len(n_sp)) {
+  sp_fit <- fit_ms$species_fits[[s]]
+  if (is.null(sp_fit)) next
+  psi_sp <- fitted(sp_fit)$psi  # N x T matrix
+  traj_list[[s]] <- data.frame(
+    species  = paste("Species", s),
+    period   = seq_len(n_per),
+    mean_psi = colMeans(psi_sp),
+    lo       = apply(psi_sp, 2, quantile, 0.025),
+    hi       = apply(psi_sp, 2, quantile, 0.975)
+  )
+}
+traj_df <- do.call(rbind, Filter(Negate(is.null), traj_list))
+
+ggplot(traj_df, aes(x = period, y = mean_psi)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.2, fill = "steelblue") +
+  geom_line(linewidth = 0.8, colour = "steelblue") +
+  geom_point(size = 2, colour = "steelblue") +
+  facet_wrap(~ species, ncol = 2) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Period", y = "Estimated occupancy",
+       title = "Species-specific occupancy trajectories") +
+  theme_minimal() +
+  theme_transparent()
+```
+
+The panel layout makes it straightforward to compare temporal dynamics across
+species. Species with high baseline occupancy and small temporal fluctuation
+(narrow ribbons) are the stable residents of the community. Species with wide
+ribbons or steep trajectories are the dynamic members, potentially
+nomadic, disturbance-dependent, or tracking fluctuating resources.
+
+### Community-level temporal trend
+
+A useful community summary is the mean occupancy across all species per
+period, which reveals whether the community as a whole is expanding,
+contracting, or stable.
+
+```{r ms-community-trend}
+community_trend <- aggregate(mean_psi ~ period, data = traj_df, FUN = mean)
+community_lo    <- aggregate(lo ~ period, data = traj_df, FUN = mean)
+community_hi    <- aggregate(hi ~ period, data = traj_df, FUN = mean)
+
+community_summary <- data.frame(
+  period   = community_trend$period,
+  mean_psi = community_trend$mean_psi,
+  lo       = community_lo$lo,
+  hi       = community_hi$hi
+)
+
+ggplot() +
+  geom_line(data = traj_df,
+            aes(x = period, y = mean_psi, group = species),
+            colour = "grey70", linewidth = 0.4) +
+  geom_ribbon(data = community_summary,
+              aes(x = period, ymin = lo, ymax = hi),
+              alpha = 0.2, fill = "firebrick") +
+  geom_line(data = community_summary,
+            aes(x = period, y = mean_psi),
+            linewidth = 1.2, colour = "firebrick") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Period", y = "Mean occupancy",
+       title = "Community-level occupancy trend",
+       subtitle = "Red = community mean; grey = individual species") +
+  theme_minimal() +
+  theme_transparent()
+```
+
+Divergence between species trajectories (grey lines spreading apart over
+time) indicates differential responses to environmental change. When all
+species decline together, a shared driver (e.g., landscape-level habitat
+loss) is likely. When some increase while others decrease, species-specific
+traits mediate the response, and single-species management may be
+insufficient.
+
+### Comparing species-specific temporal parameters
+
+For models fit with `temporal = "ar1"`, the temporal autocorrelation and
+innovation variance are estimated per species. Extracting these allows a
+direct comparison of temporal dynamics across the community.
+
+```{r ms-temporal-params}
+sp_temporal <- data.frame(
+  species = character(),
+  rho     = numeric(),
+  sigma   = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (s in seq_len(n_sp)) {
+  sp_fit <- fit_ms$species_fits[[s]]
+  if (is.null(sp_fit)) next
+  tc <- tryCatch(temporalCorr(sp_fit), error = function(e) NULL)
+  if (!is.null(tc)) {
+    rho_val <- tc$mean[grep("[Rr]ho", rownames(tc))]
+    prec_val <- tc$mean[grep("[Pp]recision", rownames(tc))]
+    sigma_val <- if (length(prec_val) > 0) 1 / sqrt(prec_val) else NA_real_
+    sp_temporal <- rbind(sp_temporal, data.frame(
+      species = paste("Species", s),
+      rho     = if (length(rho_val) > 0) rho_val else NA_real_,
+      sigma   = sigma_val,
+      stringsAsFactors = FALSE
+    ))
+  }
+}
+
+if (nrow(sp_temporal) > 0) {
+  sp_temporal[order(-sp_temporal$rho), ]
+}
+```
+
+Species with high $\rho$ and low $\sigma$ are the temporal "anchors" of
+the community; their occupancy is highly predictable from year to year.
+Species with low $\rho$ and high $\sigma$ are the "wildcards" whose
+presence is driven by stochastic or unmeasured factors. This information
+can guide monitoring design: anchor species need less frequent surveys,
+while wildcard species require annual visits to track their volatile
+dynamics.
+
+
+## Formal model comparison: static vs. temporal
+
+The earlier comparison used a null vs. covariate model, both with temporal
+structure. Here we ask the more fundamental question: does temporal structure
+improve on a static (single-season stacked) model at all?
+
+To compare fairly, we fit three models to the same multi-season data:
+
+1. **Static:** No temporal structure. The 3D array is collapsed to 2D by
+   stacking all site-periods. Each site-period is treated as an independent
+   observation.
+2. **IID temporal:** Year effects are independent draws, absorbing
+   unstructured year-to-year variation.
+3. **AR(1) temporal:** Year effects are temporally correlated.
+
+```{r static-vs-temporal}
+# Fit the static model by dropping the temporal argument
+fit_static <- occu(~ occ_x1, ~ det_x1, data = sim$data, verbose = 0)
+
+# Fit IID and AR(1) temporal models
+fit_iid_comp  <- occu(~ occ_x1, ~ det_x1, data = sim$data, temporal = "iid", verbose = 0)
+fit_ar1_comp  <- occu(~ occ_x1, ~ det_x1, data = sim$data, temporal = "ar1", verbose = 0)
+
+comp_table <- compare_models(
+  static = fit_static,
+  iid    = fit_iid_comp,
+  ar1    = fit_ar1_comp,
+  criterion = "waic"
+)
+comp_table[, c("model", "WAIC", "delta", "weight")]
+```
+
+The WAIC comparison provides a principled ranking. Since the simulated data
+contain genuine AR(1) structure ($\rho = 0.7$), the AR(1) model should
+receive the highest weight. The static model pays a penalty for ignoring
+temporal dependence, which inflates residual variance and produces
+overconfident standard errors on the fixed effects.
+
+### How large must the WAIC difference be?
+
+A common guideline is that a WAIC difference ($\Delta$WAIC) greater than 2
+provides positive evidence for the better model, and $\Delta$WAIC > 10
+provides very strong evidence (analogous to AIC interpretation from Burnham
+and Anderson 2002). When $\Delta$WAIC < 2, the models are effectively
+indistinguishable and the simpler model should be preferred for parsimony.
+
+The WAIC weights in the comparison table can also be interpreted as
+approximate posterior model probabilities. A weight of 0.95 for the AR(1)
+model means there is 95% probability that it provides the best
+predictive fit among the candidates, given the data.
+
+### Inspecting fixed-effect differences across models
+
+Beyond WAIC, comparing the fixed-effect estimates from the
+static and temporal models. The temporal model should produce similar point
+estimates but wider (more honest) credible intervals because it accounts for
+the non-independence of repeated observations at each site.
+
+```{r compare-fixed-effects}
+static_coefs <- coef(fit_static)
+ar1_coefs    <- coef(fit_ar1_comp)
+
+coef_comparison <- data.frame(
+  parameter = names(static_coefs$occupancy),
+  static    = round(unlist(static_coefs$occupancy), 3),
+  ar1       = round(unlist(ar1_coefs$occupancy), 3),
+  row.names = NULL
+)
+coef_comparison
+```
+
+If the static model's credible intervals are notably narrower, it is
+producing false precision by treating temporally correlated observations as
+independent. This is the occupancy-modelling equivalent of pseudoreplication,
+and it can lead to spurious conclusions about covariate effects.
+
+
+## Detection trajectories over time
+
+In multi-season models, detection probability often varies as much across
+years as occupancy does. Changes in survey personnel, shifting phenology, or
+interannual weather variation all affect detection. INLAocc estimates
+detection separately for each period, and inspecting these estimates can
+reveal whether apparent occupancy trends are partially confounded with
+detection trends.
+
+```{r detection-trajectory}
+fit_vals <- fitted(fit)
+p_by_period <- fit_vals$p  # N x (T * J) matrix, reshaped per period
+
+# Compute mean detection per period
+n_per_det <- sim$truth$n_seasons
+J_det <- ncol(sim$data$y[1, 1, , drop = FALSE])  # visits per period
+p_means_per <- numeric(n_per_det)
+for (t in seq_len(n_per_det)) {
+  cols <- ((t - 1) * J_det + 1):(t * J_det)
+  p_means_per[t] <- mean(p_by_period[, cols], na.rm = TRUE)
+}
+
+det_df <- data.frame(
+  period = seq_len(n_per_det),
+  mean_p = p_means_per
+)
+
+ggplot(det_df, aes(x = period, y = mean_p)) +
+  geom_line(linewidth = 1, colour = "darkorange") +
+  geom_point(size = 2.5, colour = "darkorange") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Period", y = "Mean detection probability",
+       title = "Detection probability over time") +
+  theme_minimal() +
+  theme_transparent()
+```
+
+Ideally, detection should be roughly stable across periods or vary in
+a way that is explained by detection covariates. A strong downward trend in
+detection coinciding with an upward occupancy trend should raise suspicion
+about confounding. It may be that the species is not truly increasing, but
+rather that detection is declining and the model is compensating by inflating
+occupancy estimates. Comparing the detection trajectory against known changes
+in survey methodology helps distinguish real trends from artefacts.
+
+When detection varies strongly across periods but no detection covariates
+are available, the model relies entirely on the within-period replicate
+structure to identify detection. This works well when each period has at
+least 3 visits, but with only 2 visits per period, detection and occupancy
+become weakly identifiable, and the temporal random effect may absorb
+variation that actually belongs to the detection process. In such cases,
+increasing the number of replicate visits, even by a single additional
+survey per period, substantially improves identifiability.
+
+
+## Pseudoreplication and site-level random effects
+
+Multi-season occupancy data contain an inherent source of non-independence:
+the same site is observed repeatedly across periods. If we stack all
+site-period combinations and treat them as independent observations (as in a
+single-season model applied to pooled data), we commit pseudoreplication
+(Hurlbert 1984). The consequences are narrower credible intervals than
+warranted, inflated test statistics for covariate effects, and a false sense
+of precision about temporal trends.
+
+The AR(1) temporal random effect addresses part of this problem by modelling
+the shared year-to-year correlation. But it does not account for the
+within-site correlation that arises when the same site appears in multiple
+periods. A site that is occupied in year 1 is likely occupied in year 2 not
+only because of the shared temporal environment ($\eta_t$) but also because
+site-level factors (microhabitat quality, local food availability, territory
+suitability) are persistent. This site-level persistence is not captured by
+the AR(1), which operates at the landscape level.
+
+Two solutions are available in INLAocc:
+
+1. **An unstructured site random effect.** Including a random intercept for
+   site adds a site-specific deviation $u_i \sim \mathcal{N}(0, \sigma^2_u)$
+   to the occupancy linear predictor. This absorbs persistent differences
+   between sites that are not explained by covariates. In formula syntax,
+   supply a site index variable in `occ.covs` (e.g., `site_id = 1:N`) and
+   include it as `(1 | site_id)` in the formula, or equivalently, use a
+   random effect specification if supported by the model interface.
+
+2. **A spatial random effect.** When sites have spatial coordinates and
+   nearby sites are expected to share similar occupancy, the SPDE spatial
+   random field (see `vignette("spatial-models")`) provides a structured
+   alternative to the unstructured site effect. The spatial field induces
+   correlation between nearby sites, which is more informative than the
+   exchangeable correlation assumed by the unstructured effect. For datasets
+   with sufficient spatial coverage, the spatial random effect typically
+   outperforms the unstructured site effect in both fit and prediction.
+
+The choice between unstructured and spatial site effects parallels the
+choice between IID and AR(1) temporal effects: the unstructured version is
+simpler and appropriate when site-level differences have no spatial pattern,
+while the spatial version is more informative when site similarity decays with
+distance. In practice, if coordinates are available, the spatial model is
+usually worth trying.
+
+Both site-level and temporal random effects can be included simultaneously.
+The combined model attributes variation in occupancy to four sources:
+fixed-effect covariates ($\mathbf{x}_i^\top \boldsymbol{\beta}$),
+persistent site-level differences ($u_i$ or $w(\mathbf{s}_i)$), shared
+temporal fluctuation ($\eta_t$), and residual noise. This decomposition
+provides a clearer picture of what drives occupancy patterns than any single
+component alone.
+
+
+## Summary and next steps
+
+This vignette has covered the full workflow for multi-season occupancy models
+in INLAocc: mathematical formulation of the AR(1) temporal random effect, data
+structure and handling of missing visits, simulation, model fitting, temporal
+diagnostics, prediction at new covariate values, posterior predictive checks,
+multi-species extensions, and formal model comparison.
+
+The AR(1) parameterization provides a parsimonious and computationally efficient
+alternative to the classical colonization-extinction formulation. It is
+particularly well-suited when the inferential target is occupancy trends and
+their drivers, rather than the transition rates themselves. The two
+hyperparameters ($\rho$ and $\sigma_\eta$) have direct ecological
+interpretations that can inform monitoring design and conservation planning.
+
+For spatially structured data, the temporal model can be extended with a
+spatial random field (see `vignette("spatial-models")`). For multi-species
+data with cross-species correlation, the temporal model integrates with the
+multi-species framework (see `vignette("multi-species")`). For species whose
+response to environmental drivers varies spatially, spatially varying
+coefficient models can capture non-separable spatio-temporal patterns (see
+`vignette("svc-models")`).
